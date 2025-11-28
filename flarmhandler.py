@@ -203,12 +203,17 @@ def run_as_admin(argv=None):
     if argv is None:
         argv = sys.argv
     if hasattr(sys, '_MEIPASS'):
+        # Frozen: executable is the app itself, args are the rest
         arguments = map(str, argv[1:])
+        executable = sys.executable
     else:
-        arguments = map(str, argv)
+        # Script: executable is python, first arg is script (make absolute), rest are args
+        args = list(argv)
+        args[0] = os.path.abspath(args[0])
+        arguments = map(str, args)
+        executable = sys.executable
     
-    argument_line = u' '.join(arguments)
-    executable = sys.executable
+    argument_line = u' '.join(f'"{a}"' if ' ' in a else a for a in arguments)
     
     ret = ctypes.windll.shell32.ShellExecuteW(None, "runas", executable, argument_line, None, 1)
     return int(ret) > 32
@@ -329,7 +334,9 @@ def create_documents_app_folder(owner: str, shortname: str, version: str, platfo
         documents = Path(os.path.join(os.environ.get('USERPROFILE',''), 'Documents'))
     else:
         documents = home / 'Documents'
-    base = documents / 'FLARM Apps' / f"{owner}.{shortname}.{version}-{platformstr}"
+    # New format: {app}-{version}-{platform}
+    # shortname is the repo name which we treat as the app name
+    base = documents / 'FLARM Apps' / f"{shortname}-{version}-{platformstr}"
     base.mkdir(parents=True, exist_ok=True)
     return base
 
@@ -390,52 +397,91 @@ def create_shortcut(desktop_path: Path, target: Path, name: str, args: str = "")
         return str(file_path)
 
 # --- Registry & Protocol Registration ---
-def check_registry_keys() -> bool:
+def check_registry_keys(python_path: str, script_path: str) -> bool:
     if winreg is None: return False
-    try:
-        key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, rf"Software\Classes\{SCHEME}\shell\open\command")
-        val, _ = winreg.QueryValueEx(key, "")
-        winreg.CloseKey(key)
-        if val: return True
-    except Exception:
-        pass
-    try:
-        key = winreg.OpenKey(winreg.HKEY_CLASSES_ROOT, rf"{SCHEME}\shell\open\command")
-        val, _ = winreg.QueryValueEx(key, "")
-        winreg.CloseKey(key)
-        if val: return True
-    except Exception:
-        pass
-    return False
+    expected_cmd = f"\"{python_path}\" \"{script_path}\" \"%1\""
+    
+    def normalize(s):
+        return os.path.normcase(os.path.abspath(s) if s else "")
+
+    # Helper to check a key
+    def check_key(root, key_path, expected_val=None):
+        try:
+            key = winreg.OpenKey(root, key_path)
+            val, _ = winreg.QueryValueEx(key, "")
+            winreg.CloseKey(key)
+            if expected_val:
+                # Loose check for command (paths might vary slightly in casing)
+                # We normalize the expected command's paths and the value's paths?
+                # It's hard to parse the command string perfectly, but we can try simple case insensitive string match
+                return val.lower() == expected_val.lower()
+            return val == "Flarm.Package" # For extension check
+        except Exception:
+            return False
+
+    # 1. Check Protocol in HKCU
+    if not check_key(winreg.HKEY_CURRENT_USER, rf"Software\Classes\{SCHEME}\shell\open\command", expected_cmd):
+        # Fallback: Check HKCR (System-wide)
+        if not check_key(winreg.HKEY_CLASSES_ROOT, rf"{SCHEME}\shell\open\command", expected_cmd):
+            return False
+            
+    # 2. Check .iflapp extension in HKCU
+    if not check_key(winreg.HKEY_CURRENT_USER, rf"Software\Classes\.iflapp"):
+        # Fallback: Check HKCR
+        if not check_key(winreg.HKEY_CLASSES_ROOT, rf".iflapp"):
+            return False
+            
+    return True
 
 def register_scheme_windows(python_path: str, script_path: str) -> tuple[bool, str]:
     if winreg is None:
         return False, "winreg module not available"
+    
     cmd = f"\"{python_path}\" \"{script_path}\" \"%1\""
+    icon_path = str(Path(script_path).parent / "app" / "flarmpack.ico")
+    
     try:
-        key = winreg.CreateKey(winreg.HKEY_CLASSES_ROOT, SCHEME)
+        # 1. Register Protocol flarmstore://
+        key_path = rf"Software\Classes\{SCHEME}"
+        key = winreg.CreateKey(winreg.HKEY_CURRENT_USER, key_path)
         winreg.SetValueEx(key, None, 0, winreg.REG_SZ, "URL:Flarm Store Protocol")
         winreg.SetValueEx(key, "URL Protocol", 0, winreg.REG_SZ, "")
+        
+        # Icon
+        if os.path.exists(icon_path):
+            icon_key = winreg.CreateKey(key, "DefaultIcon")
+            winreg.SetValueEx(icon_key, None, 0, winreg.REG_SZ, icon_path)
+            winreg.CloseKey(icon_key)
+            
         shell = winreg.CreateKey(key, r"shell\open\command")
         winreg.SetValueEx(shell, None, 0, winreg.REG_SZ, cmd)
         winreg.CloseKey(shell)
         winreg.CloseKey(key)
-        return True, "Registered in HKEY_CLASSES_ROOT (System-wide)"
-    except PermissionError:
-        try:
-            user_key_path = rf"Software\Classes\{SCHEME}"
-            key = winreg.CreateKey(winreg.HKEY_CURRENT_USER, user_key_path)
-            winreg.SetValueEx(key, None, 0, winreg.REG_SZ, "URL:Flarm Store Protocol")
-            winreg.SetValueEx(key, "URL Protocol", 0, winreg.REG_SZ, "")
-            shell = winreg.CreateKey(key, r"shell\open\command")
-            winreg.SetValueEx(shell, None, 0, winreg.REG_SZ, cmd)
-            winreg.CloseKey(shell)
-            winreg.CloseKey(key)
-            return True, "Registered in HKEY_CURRENT_USER (User-level)"
-        except Exception as e:
-            return False, f"Failed to register in HKCU: {str(e)}"
+        
+        # 2. Register .iflapp extension
+        # .iflapp -> Flarm.Package
+        key_ext = winreg.CreateKey(winreg.HKEY_CURRENT_USER, r"Software\Classes\.iflapp")
+        winreg.SetValueEx(key_ext, None, 0, winreg.REG_SZ, "Flarm.Package")
+        winreg.CloseKey(key_ext)
+        
+        # Flarm.Package -> Command
+        key_progid = winreg.CreateKey(winreg.HKEY_CURRENT_USER, r"Software\Classes\Flarm.Package")
+        winreg.SetValueEx(key_progid, None, 0, winreg.REG_SZ, "Flarm Package")
+        
+        if os.path.exists(icon_path):
+            icon_key = winreg.CreateKey(key_progid, "DefaultIcon")
+            winreg.SetValueEx(icon_key, None, 0, winreg.REG_SZ, icon_path)
+            winreg.CloseKey(icon_key)
+            
+        shell_progid = winreg.CreateKey(key_progid, r"shell\open\command")
+        winreg.SetValueEx(shell_progid, None, 0, winreg.REG_SZ, cmd)
+        winreg.CloseKey(shell_progid)
+        winreg.CloseKey(key_progid)
+
+        return True, "Registered in HKCU (User-level)"
+        
     except Exception as e:
-        return False, f"Failed to register in HKCR: {str(e)}"
+        return False, f"Failed to register: {str(e)}"
 
 def register_scheme_linux(python_path: str, script_path: str) -> tuple[bool, str]:
     try:
@@ -499,11 +545,17 @@ def register_scheme_macos(python_path: str, script_path: str) -> tuple[bool, str
 def ensure_registered(python_path: str, script_path: str) -> tuple[bool, str]:
     system = platform.system().lower()
     if 'windows' in system:
-        if check_registry_keys():
-            return True, "Already registered"
+        if check_registry_keys(python_path, script_path):
+            return True, "Already registered correctly"
+        
+        # Try to register in HKCU (no admin needed usually)
         success, msg = register_scheme_windows(python_path, script_path)
         if success:
             return True, msg
+            
+        # If failed, maybe we need admin rights (though HKCU shouldn't need it)
+        # But if we were trying HKCR before, we might need it.
+        # Our new logic prefers HKCU.
         if not is_admin():
             return False, "ELEVATION_REQUIRED"
         return False, msg
@@ -731,10 +783,13 @@ def find_installed_path(owner: str, repo: str) -> Path | None:
     if not base_dir.exists():
         return None
         
-    # Look for folder starting with owner.repo
-    prefix = f"{owner}.{repo}."
+    # Look for folder starting with {repo}-
+    # We don't know the version or platform easily without parsing, but we can check if any folder starts with repo-
+    prefix = f"{repo}-"
     for p in base_dir.iterdir():
         if p.is_dir() and p.name.startswith(prefix):
+            # Verify it matches the pattern {repo}-{version}-{platform}
+            # This is a loose check, but sufficient to find if "some version" is installed.
             return p
     return None
 
@@ -800,21 +855,28 @@ class InstallWindow(QtWidgets.QWidget):
         h_layout.addStretch()
         
         # Actions
-        action_v = QtWidgets.QVBoxLayout()
-        action_v.setSpacing(10)
+        action_h = QtWidgets.QHBoxLayout()
+        action_h.setSpacing(10)
         
         self.install_btn = QtWidgets.QPushButton("Instalar")
         self.install_btn.setObjectName("PrimaryBtn")
         self.install_btn.setCursor(QtCore.Qt.PointingHandCursor)
         self.install_btn.setMinimumWidth(120)
-        action_v.addWidget(self.install_btn)
+        action_h.addWidget(self.install_btn)
         
         self.share_btn = QtWidgets.QPushButton("Compartir")
         self.share_btn.setCursor(QtCore.Qt.PointingHandCursor)
         self.share_btn.setMinimumWidth(120)
-        action_v.addWidget(self.share_btn)
+        action_h.addWidget(self.share_btn)
+
+        if self.installed_path:
+            self.uninstall_btn = QtWidgets.QPushButton("Desinstalar")
+            self.uninstall_btn.setCursor(QtCore.Qt.PointingHandCursor)
+            self.uninstall_btn.setMinimumWidth(120)
+            self.uninstall_btn.setStyleSheet("color: #d93025; border: 1px solid #f28b82;")
+            action_h.addWidget(self.uninstall_btn)
         
-        h_layout.addLayout(action_v)
+        h_layout.addLayout(action_h)
         
         self.main_layout.addWidget(header)
         
@@ -874,6 +936,7 @@ class InstallWindow(QtWidgets.QWidget):
         if self.installed_path:
             self.install_btn.setText("Ejecutar")
             self.install_btn.clicked.connect(self.on_execute)
+            self.uninstall_btn.clicked.connect(self.on_uninstall)
             self.title_bar.title_label.setText(f"Ejecutar {self.repo}")
             self.log_msg(f"Aplicación detectada en: {self.installed_path}")
         else:
@@ -979,10 +1042,78 @@ class InstallWindow(QtWidgets.QWidget):
                 self.readme_view.setPlainText(f"Error loading details: {e}")
 
     def on_share(self):
-        link = f"{SCHEME}://{self.owner}.{self.repo}"
+        long_url = f"https://github.com/{self.owner}/{self.repo}"
+        try:
+            r = requests.get(f"https://is.gd/create.php?format=simple&url={long_url}", timeout=5)
+            if r.ok:
+                short_url = r.text.strip()
+            else:
+                short_url = long_url
+        except:
+            short_url = long_url
+            
         clipboard = QtWidgets.QApplication.clipboard()
-        clipboard.setText(link)
-        QtWidgets.QMessageBox.information(self, "Enlace copiado", f"El enlace ha sido copiado al portapapeles:\n\n{link}")
+        clipboard.setText(short_url)
+        
+        orig_text = self.share_btn.text()
+        self.share_btn.setText("¡Copiado!")
+        self.share_btn.setDisabled(True)
+        QtCore.QTimer.singleShot(2000, lambda: self.reset_share_btn(orig_text))
+        
+    def reset_share_btn(self, text):
+        self.share_btn.setText(text)
+        self.share_btn.setDisabled(False)
+
+    def on_uninstall(self):
+        reply = QtWidgets.QMessageBox.question(self, 'Confirmar desinstalación', 
+                                             f"¿Estás seguro de que quieres desinstalar {self.app_name}?",
+                                             QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No, QtWidgets.QMessageBox.No)
+        if reply == QtWidgets.QMessageBox.Yes:
+            try:
+                # 1. Remove desktop shortcuts
+                desktop = Path.home() / 'Desktop'
+                shortcut_name = self.app_name if self.app_name else f"{self.owner}.{self.shortname}"
+                shortcut_name = re.sub(r'[<>:"/\\|?*]', '', shortcut_name)
+                
+                # Try to remove various shortcut formats
+                for ext in ['.lnk', '.url', '.desktop', '.command']:
+                    shortcut_path = desktop / (shortcut_name + ext)
+                    if shortcut_path.exists():
+                        try:
+                            shortcut_path.unlink()
+                            self.log_msg(f"Acceso directo eliminado: {shortcut_path.name}")
+                        except Exception as e:
+                            self.log_msg(f"No se pudo eliminar acceso directo {shortcut_path.name}: {e}")
+                
+                # 2. Remove application folder
+                if self.installed_path and self.installed_path.exists():
+                    shutil.rmtree(self.installed_path, ignore_errors=False)
+                    self.log_msg(f"Carpeta eliminada: {self.installed_path}")
+                
+                # 3. Update UI state
+                self.installed_path = None
+                
+                # Change button back to "Instalar"
+                self.install_btn.setText("Instalar")
+                self.install_btn.clicked.disconnect()
+                self.install_btn.clicked.connect(self.on_install)
+                
+                # Remove uninstall button
+                if hasattr(self, 'uninstall_btn'):
+                    self.uninstall_btn.setParent(None)
+                    self.uninstall_btn.deleteLater()
+                    delattr(self, 'uninstall_btn')
+                
+                # Update title
+                self.title_bar.title_label.setText(f"Instalar {self.app_name}")
+                
+                self.log_msg("Desinstalación completada correctamente.")
+                QtWidgets.QMessageBox.information(self, "Desinstalado", "La aplicación ha sido desinstalada correctamente.")
+                
+            except PermissionError as e:
+                QtWidgets.QMessageBox.critical(self, "Error", f"No se pudo desinstalar: Permiso denegado.\n{str(e)}")
+            except Exception as e:
+                QtWidgets.QMessageBox.critical(self, "Error", f"No se pudo desinstalar: {str(e)}")
 
     def on_execute(self):
         if not self.installed_path: return
@@ -996,10 +1127,11 @@ class InstallWindow(QtWidgets.QWidget):
         if exe_path:
             try:
                 subprocess.Popen([str(exe_path)], cwd=str(exe_path.parent))
-                self.log_msg(f"Ejecutando: {exe_path.name}")
+                self.close()
             except Exception as e:
-                QtWidgets.QMessageBox.critical(self, "Error", f"No se pudo ejecutar: {e}")
+                self.log_msg(f"Error al ejecutar: {e}")
         else:
+            self.log_msg("No se encontró el ejecutable.")
             QtWidgets.QMessageBox.warning(self, "Error", "No se encontró el ejecutable.")
 
     def on_install(self):
@@ -1129,24 +1261,16 @@ def main(argv):
     script_path = os.path.abspath(argv[0])
     
     # 1. Check Registry Integrity
-    is_reg = check_registry_keys()
+    is_reg = check_registry_keys(python_path, script_path)
     
     if not is_reg:
         # If not registered, we MUST be admin to register system-wide or user-wide reliably
-        # Or at least try.
         if not is_admin():
-            # Restart as Admin immediately
-            # We don't show UI, just restart
             if run_as_admin(argv):
-                return 0 # Exit, let the admin instance take over
+                return 0 
             else:
-                # User denied admin, we can't function properly as requested
-                # But maybe we can try to register in HKCU?
-                # The user requirement says: "si no esta en modo administrador se reinicia en modo administrador"
-                # So we failed.
                 pass
         else:
-            # We are admin, register now
             ensure_registered(python_path, script_path)
 
     app = QtWidgets.QApplication(argv)
@@ -1162,52 +1286,18 @@ def main(argv):
             QtWidgets.QMessageBox.critical(None, "Error", f"URL inválida: {e}")
             return 1
     else:
-        # If no args, we don't show prompt anymore as per "al abrir por primera vez no aparezca el cuadro introducir url"
-        # Wait, the user said: "al abrir por primera vez no aparezca el cuadro introducir url, sino, verifica integridad..."
-        # This implies that if opened without args (just double click), it should just verify and maybe exit?
-        # Or maybe it should show the prompt ONLY if verification passes?
-        # Actually, usually a handler needs a URL. If opened manually, it's useless without a URL unless it's a "Settings" app.
-        # But the previous behavior was "MinimalPrompt".
-        # User said: "al abrir por primera vez no aparezca el cuadro introducir url, sino, verifica integridad con el registro si se encuentra en modo administrador (y si no esta en modo administrador se reinicia en modo administrador)"
-        # This sounds like the *primary action* of opening the exe is to verify registry.
-        # After verification, if no URL is provided, what should happen?
-        # I will assume we still show the Prompt because otherwise the app closes immediately.
-        # The instruction likely means "Don't show the prompt *before* verifying/elevating".
-        
-        # We already did the verification/elevation at the top of main().
-        # So now we can show the prompt.
-        
-        # However, if the user meant "Don't show the prompt AT ALL, just register and exit", that would be weird.
-        # I'll stick to showing the prompt but only after the elevation check is passed.
-        
-        # Wait, "al abrir por primera vez no aparezca el cuadro introducir url" might mean "Don't show the prompt, just do the registration silently and maybe show a success message or nothing".
-        # But if I do that, the user can't input a URL manually.
-        # I will assume the user wants the app to be a "Setup" utility primarily when run without args.
-        # Let's show a message "FlarmHandler configurado correctamente" and then maybe the prompt or exit.
-        # I'll keep the prompt for utility.
-        
-        # Actually, let's look at the request again: "al abrir por primera vez no aparezca el cuadro introducir url, sino, verifica integridad..."
-        # It contrasts "Show Prompt" vs "Verify Integrity".
-        # So I will perform verification (done above).
-        # If we are here, we are verified (or user denied admin).
-        # I will show the prompt because otherwise the app is invisible.
-        pass
-        
-        # But wait, maybe they want a "Setup Complete" window?
-        # I'll stick to the MinimalPrompt but maybe add a status label saying "Registry Verified".
-        
-        # Re-reading: "no aparezca el cuadro introducir url, sino, verifica integridad..."
-        # Maybe they want the app to *only* be a registrar when run manually?
-        # I will keep the prompt but ensure the verification happened first (which it did).
-        
-        # Actually, I'll add a check: if we just registered, show a message.
-        
-    # We need to define MinimalPrompt if we use it, but I removed it from the code above?
-    # Ah, I missed copying MinimalPrompt class in the previous `write_to_file` block?
-    # No, I need to include it. I will add it back.
-    
-    # Wait, I didn't include MinimalPrompt in the `write_to_file` content above! I need to add it.
-    pass
+        # Manual Mode
+        text, ok = QtWidgets.QInputDialog.getText(None, "Flarm Handler", "Introduce una URL de Flarm (flarmstore://owner.repo):")
+        if ok and text:
+            try:
+                repo, owner = parse_flarm_url(text)
+                w = InstallWindow(repo, owner)
+                w.show()
+            except Exception as e:
+                QtWidgets.QMessageBox.critical(None, "Error", f"URL inválida: {e}")
+                return 1
+        else:
+            return 0
 
     app.exec_()
 
