@@ -5,6 +5,14 @@ Todas las mejoras y cambios notables en este proyecto serán documentados en est
 ## [Unreleased] - 2025-11-28
 
 ### ✨ Añadido
+- **Soporte de Paquetes Offline (.iflapp)**:
+  - Instalación directa desde archivos locales `.iflapp`.
+  - Asociación de archivos automática con icono personalizado.
+  - Extracción e instalación en `Documents/FLARM Apps`.
+- **Integridad del Sistema**:
+  - Verificación automática de modo Administrador al iniciar.
+  - Comprobación y reparación de integridad del registro (protocolo y extensión).
+  - **Reinicio Automático**: Reinicio del sistema tras aplicar correcciones en el registro.
 - **Interfaz Full QSS**: Rediseño completo con estética moderna (Roboto, botones estilo Play Store).
 - **Barra de Título Personalizada**: Estilo Windows 11 con botones de control (Minimizar, Maximizar, Cerrar) integrados.
 - **Soporte Markdown**: Visualización renderizada de las descripciones de los paquetes (README.md) usando `markdown` y `QWebEngineView`.

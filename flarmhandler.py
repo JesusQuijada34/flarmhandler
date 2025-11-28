@@ -224,6 +224,29 @@ def platform_tag() -> str:
         return 'Knosthalij'
     return 'Danenone'
 
+def check_platform_compatibility(target_platform: str) -> tuple[bool, str]:
+    """
+    Checks if the target platform (from details.xml) is compatible with the current OS.
+    Returns (is_compatible, error_message).
+    """
+    current_os_tag = platform_tag()
+    target = target_platform.lower() if target_platform else ""
+    
+    # If target is empty, we assume it's universal or unknown, so we allow it (or maybe warn?)
+    # For now, let's be permissive if unknown, but strict if known.
+    if not target:
+        return True, ""
+
+    if current_os_tag == 'Knosthalij': # Windows
+        if 'danenone' in target:
+            return False, "Este paquete está diseñado para Linux (Danenone) y no es compatible con Windows."
+    
+    elif current_os_tag == 'Danenone': # Linux/Mac (simplified)
+        if 'knosthalij' in target:
+            return False, "Este paquete está diseñado para Windows (Knosthalij) y no es compatible con este sistema."
+            
+    return True, ""
+
 def parse_flarm_url(url: str) -> tuple[str, str]:
     if not url:
         raise ValueError("No URL provided")
@@ -400,6 +423,7 @@ def create_shortcut(desktop_path: Path, target: Path, name: str, args: str = "")
 def check_registry_keys(python_path: str, script_path: str) -> bool:
     if winreg is None: return False
     expected_cmd = f"\"{python_path}\" \"{script_path}\" \"%1\""
+    expected_icon = get_icon_path()
     
     def normalize(s):
         return os.path.normcase(os.path.abspath(s) if s else "")
@@ -411,34 +435,64 @@ def check_registry_keys(python_path: str, script_path: str) -> bool:
             val, _ = winreg.QueryValueEx(key, "")
             winreg.CloseKey(key)
             if expected_val:
-                # Loose check for command (paths might vary slightly in casing)
-                # We normalize the expected command's paths and the value's paths?
-                # It's hard to parse the command string perfectly, but we can try simple case insensitive string match
                 return val.lower() == expected_val.lower()
-            return val == "Flarm.Package" # For extension check
+            return True
         except Exception:
             return False
 
     # 1. Check Protocol in HKCU
     if not check_key(winreg.HKEY_CURRENT_USER, rf"Software\Classes\{SCHEME}\shell\open\command", expected_cmd):
-        # Fallback: Check HKCR (System-wide)
         if not check_key(winreg.HKEY_CLASSES_ROOT, rf"{SCHEME}\shell\open\command", expected_cmd):
             return False
             
     # 2. Check .iflapp extension in HKCU
-    if not check_key(winreg.HKEY_CURRENT_USER, rf"Software\Classes\.iflapp"):
-        # Fallback: Check HKCR
-        if not check_key(winreg.HKEY_CLASSES_ROOT, rf".iflapp"):
+    if not check_key(winreg.HKEY_CURRENT_USER, rf"Software\Classes\.iflapp", "Flarm.Package"):
+        if not check_key(winreg.HKEY_CLASSES_ROOT, rf".iflapp", "Flarm.Package"):
             return False
             
+    # 3. Check Icon for Flarm.Package
+    # We check if the current icon matches what we expect. If not, we return False to trigger an update.
+    # We try to match either raw path or path,0
+    try:
+        key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Software\Classes\Flarm.Package\DefaultIcon")
+        val, _ = winreg.QueryValueEx(key, "")
+        winreg.CloseKey(key)
+        
+        # Normalize paths for comparison
+        current_icon = val.lower().replace(",0", "")
+        target_icon = expected_icon.lower()
+        
+        if current_icon != target_icon:
+            return False
+    except Exception:
+        # Key doesn't exist or error reading it
+        return False
+            
     return True
+
+def get_icon_path() -> str:
+    """Get the correct path to flarmpack.ico whether running as script or compiled."""
+    if hasattr(sys, '_MEIPASS'):
+        # Running as compiled executable (PyInstaller)
+        base_path = Path(sys._MEIPASS)
+    else:
+        # Running as script
+        base_path = Path(__file__).parent
+    
+    icon_path = base_path / "app" / "flarmpack.ico"
+    
+    # Fallback to app-icon.ico if flarmpack.ico doesn't exist
+    if not icon_path.exists():
+        icon_path = base_path / "app" / "app-icon.ico"
+    
+    return str(icon_path)
 
 def register_scheme_windows(python_path: str, script_path: str) -> tuple[bool, str]:
     if winreg is None:
         return False, "winreg module not available"
     
     cmd = f"\"{python_path}\" \"{script_path}\" \"%1\""
-    icon_path = str(Path(script_path).parent / "app" / "flarmpack.ico")
+    icon_path = get_icon_path()
     
     try:
         # 1. Register Protocol flarmstore://
@@ -450,7 +504,7 @@ def register_scheme_windows(python_path: str, script_path: str) -> tuple[bool, s
         # Icon
         if os.path.exists(icon_path):
             icon_key = winreg.CreateKey(key, "DefaultIcon")
-            winreg.SetValueEx(icon_key, None, 0, winreg.REG_SZ, icon_path)
+            winreg.SetValueEx(icon_key, None, 0, winreg.REG_SZ, f"{icon_path},0")
             winreg.CloseKey(icon_key)
             
         shell = winreg.CreateKey(key, r"shell\open\command")
@@ -470,13 +524,21 @@ def register_scheme_windows(python_path: str, script_path: str) -> tuple[bool, s
         
         if os.path.exists(icon_path):
             icon_key = winreg.CreateKey(key_progid, "DefaultIcon")
-            winreg.SetValueEx(icon_key, None, 0, winreg.REG_SZ, icon_path)
+            winreg.SetValueEx(icon_key, None, 0, winreg.REG_SZ, f"{icon_path},0")
             winreg.CloseKey(icon_key)
             
         shell_progid = winreg.CreateKey(key_progid, r"shell\open\command")
         winreg.SetValueEx(shell_progid, None, 0, winreg.REG_SZ, cmd)
         winreg.CloseKey(shell_progid)
         winreg.CloseKey(key_progid)
+
+        # Notify Shell of changes
+        try:
+            import ctypes
+            # SHCNE_ASSOCCHANGED = 0x08000000, SHCNF_IDLIST = 0x0000
+            ctypes.windll.shell32.SHChangeNotify(0x08000000, 0x0000, None, None)
+        except Exception:
+            pass
 
         return True, "Registered in HKCU (User-level)"
         
@@ -489,7 +551,13 @@ def register_scheme_linux(python_path: str, script_path: str) -> tuple[bool, str
         user_apps.mkdir(parents=True, exist_ok=True)
         desktop_file = user_apps / f"flarmstore-handler.desktop"
         exec_cmd = f"{python_path} {script_path} %u"
+        
+        icon_path = get_icon_path()
+        
         content = "[Desktop Entry]\nName=Flarmstore Handler\nExec=" + exec_cmd + "\nType=Application\nTerminal=false\nMimeType=x-scheme-handler/" + SCHEME + ";\n"
+        if os.path.exists(icon_path):
+            content += f"Icon={icon_path}\n"
+            
         desktop_file.write_text(content, encoding='utf-8')
         subprocess.run(["update-desktop-database", str(user_apps)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         subprocess.run(["xdg-mime", "default", desktop_file.name, f"x-scheme-handler/{SCHEME}"])
@@ -508,6 +576,12 @@ def register_scheme_macos(python_path: str, script_path: str) -> tuple[bool, str
         resources = contents / "Resources"
         macos_dir.mkdir(parents=True, exist_ok=True)
         resources.mkdir(parents=True, exist_ok=True)
+        
+        # Copy icon
+        icon_src = get_icon_path()
+        if os.path.exists(icon_src):
+            shutil.copy(icon_src, resources / "flarmpack.ico")
+        
         wrapper = macos_dir / "flarmhandler"
         wrapper_text = "#!/bin/bash\n\"" + python_path + "\" \"" + script_path + "\" \"$@\"\n"
         wrapper.write_text(wrapper_text, encoding='utf-8')
@@ -523,6 +597,8 @@ def register_scheme_macos(python_path: str, script_path: str) -> tuple[bool, str
         plist_lines.append('    <key>CFBundleExecutable</key><string>flarmhandler</string>')
         plist_lines.append('    <key>CFBundlePackageType</key><string>APPL</string>')
         plist_lines.append('    <key>CFBundleShortVersionString</key><string>1.0</string>')
+        if os.path.exists(icon_src):
+             plist_lines.append('    <key>CFBundleIconFile</key><string>flarmpack.ico</string>')
         plist_lines.append('    <key>CFBundleURLTypes</key>')
         plist_lines.append('    <array>')
         plist_lines.append('        <dict>')
@@ -542,28 +618,32 @@ def register_scheme_macos(python_path: str, script_path: str) -> tuple[bool, str
     except Exception as e:
         return False, str(e)
 
-def ensure_registered(python_path: str, script_path: str) -> tuple[bool, str]:
+
+def ensure_registered(python_path: str, script_path: str) -> tuple[bool, str, bool]:
+    """Returns (success, message, was_modified)"""
     system = platform.system().lower()
     if 'windows' in system:
         if check_registry_keys(python_path, script_path):
-            return True, "Already registered correctly"
+            return True, "Already registered correctly", False
         
         # Try to register in HKCU (no admin needed usually)
         success, msg = register_scheme_windows(python_path, script_path)
         if success:
-            return True, msg
+            return True, msg, True  # Registry was modified
             
         # If failed, maybe we need admin rights (though HKCU shouldn't need it)
         # But if we were trying HKCR before, we might need it.
         # Our new logic prefers HKCU.
         if not is_admin():
-            return False, "ELEVATION_REQUIRED"
-        return False, msg
+            return False, "ELEVATION_REQUIRED", False
+        return False, msg, False
     if 'linux' in system:
-        return register_scheme_linux(python_path, script_path)
+        success, msg = register_scheme_linux(python_path, script_path)
+        return success, msg, success
     if 'darwin' in system:
-        return register_scheme_macos(python_path, script_path)
-    return False, "Unsupported OS"
+        success, msg = register_scheme_macos(python_path, script_path)
+        return success, msg, success
+    return False, "Unsupported OS", False
 
 # --- UI Components ---
 
@@ -759,17 +839,31 @@ def get_remote_details(owner: str, repo: str) -> dict:
     try:
         r = requests.get(url, timeout=5)
         if r.ok:
-            # Simple XML parsing using regex to avoid heavy deps if possible, 
-            # or just string finding since the format is known.
-            # But let's use a simple regex for <name>...</name>
-            content = r.text
-            name_match = re.search(r'<name>(.*?)</name>', content, re.IGNORECASE)
-            return {
-                'name': name_match.group(1) if name_match else None
-            }
+            return parse_details_xml(r.text)
     except Exception:
         pass
     return {}
+
+def parse_details_xml(content: str) -> dict:
+    """Parses details.xml content and returns a dict."""
+    data = {}
+    try:
+        # We can use regex for robustness against malformed XML or just simple extraction
+        patterns = {
+            'name': r'<name>(.*?)</name>',
+            'publisher': r'<publisher>(.*?)</publisher>',
+            'app': r'<app>(.*?)</app>',
+            'version': r'<version>(.*?)</version>',
+            'platform': r'<platform>(.*?)</platform>'
+        }
+        
+        for key, pattern in patterns.items():
+            match = re.search(pattern, content, re.IGNORECASE)
+            if match:
+                data[key] = match.group(1)
+    except Exception:
+        pass
+    return data
 
 def find_installed_path(owner: str, repo: str) -> Path | None:
     """Checks if the app is installed in Documents/FLARM Apps."""
@@ -794,14 +888,26 @@ def find_installed_path(owner: str, repo: str) -> Path | None:
     return None
 
 class InstallWindow(QtWidgets.QWidget):
-    def __init__(self, repo: str, owner: str, parent=None):
+    def __init__(self, repo: str, owner: str, local_file_path: str = None, parent=None):
         super().__init__(parent)
         self.repo = repo
         self.owner = owner
+        self.local_file_path = local_file_path
         self.shortname = repo
         self.app_name = repo # Default fallback
-        self.installed_path = find_installed_path(owner, repo)
+        self.installed_path = find_installed_path(owner, repo) if not local_file_path else None
+        self.temp_extract_dir = None # To clean up later if needed
         
+        # Metadata placeholders
+        self.meta_publisher = owner
+        self.meta_app = repo
+        self.meta_version = "Unknown"
+        self.meta_platform = "Unknown"
+
+        # Pre-load local package info if available
+        if self.local_file_path:
+            self.load_local_package_metadata()
+
         self.setWindowFlags(QtCore.Qt.FramelessWindowHint)
         self.resize(1000, 650)
         
@@ -812,7 +918,7 @@ class InstallWindow(QtWidgets.QWidget):
         
         # Title Bar
         self.title_bar = CustomTitleBar(self)
-        self.title_bar.title_label.setText(f"Instalar {self.repo}")
+        self.title_bar.title_label.setText(f"Instalar {self.app_name}")
         self.main_layout.addWidget(self.title_bar)
         
         # Banner Image
@@ -839,15 +945,15 @@ class InstallWindow(QtWidgets.QWidget):
         # Text Info
         meta_v = QtWidgets.QVBoxLayout()
         meta_v.setSpacing(4)
-        self.title_lbl = QtWidgets.QLabel(self.repo)
+        self.title_lbl = QtWidgets.QLabel(self.app_name)
         self.title_lbl.setObjectName("AppTitle")
         meta_v.addWidget(self.title_lbl)
         
-        self.meta_lbl = QtWidgets.QLabel(self.owner)
+        self.meta_lbl = QtWidgets.QLabel(self.meta_publisher)
         self.meta_lbl.setObjectName("AppMeta")
         meta_v.addWidget(self.meta_lbl)
         
-        self.ver_lbl = QtWidgets.QLabel(f"Plataforma: {platform_system_tag_for_asset()}")
+        self.ver_lbl = QtWidgets.QLabel(f"Plataforma: {self.meta_platform}")
         self.ver_lbl.setObjectName("AppVersion")
         meta_v.addWidget(self.ver_lbl)
         
@@ -937,7 +1043,7 @@ class InstallWindow(QtWidgets.QWidget):
             self.install_btn.setText("Ejecutar")
             self.install_btn.clicked.connect(self.on_execute)
             self.uninstall_btn.clicked.connect(self.on_uninstall)
-            self.title_bar.title_label.setText(f"Ejecutar {self.repo}")
+            self.title_bar.title_label.setText(f"Ejecutar {self.app_name}")
             self.log_msg(f"Aplicación detectada en: {self.installed_path}")
         else:
             self.install_btn.clicked.connect(self.on_install)
@@ -945,6 +1051,85 @@ class InstallWindow(QtWidgets.QWidget):
         self.share_btn.clicked.connect(self.on_share)
         
         QtCore.QTimer.singleShot(100, self.load_remote_assets)
+
+        # Offline Mode Adjustments (UI Updates)
+        if self.local_file_path:
+            self.share_btn.setVisible(False)
+            self.meta_lbl.setText(f"{self.meta_publisher} (Local)")
+            self.ver_lbl.setText(f"Versión: {self.meta_version} | Plataforma: {self.meta_platform}")
+            
+            # Check Compatibility
+            is_compat, msg = check_platform_compatibility(self.meta_platform)
+            if not is_compat:
+                self.install_btn.setEnabled(False)
+                self.install_btn.setText("Incompatible")
+                self.install_btn.setStyleSheet("background-color: #d93025; color: white;")
+                QtWidgets.QMessageBox.critical(self, "Incompatible", msg)
+            
+            # Load local assets if available
+            self.load_local_assets_to_ui()
+
+    def load_local_package_metadata(self):
+        """Extracts details.xml from the local package to populate metadata."""
+        try:
+            self.temp_extract_dir = Path(tempfile.mkdtemp(prefix="flarm_meta_"))
+            with zipfile.ZipFile(self.local_file_path, 'r') as z:
+                # Try to extract details.xml
+                if "details.xml" in z.namelist():
+                    z.extract("details.xml", self.temp_extract_dir)
+                    details_path = self.temp_extract_dir / "details.xml"
+                    content = details_path.read_text(encoding='utf-8')
+                    data = parse_details_xml(content)
+                    
+                    self.app_name = data.get('name', self.app_name)
+                    self.meta_publisher = data.get('publisher', self.meta_publisher)
+                    self.meta_app = data.get('app', self.meta_app)
+                    self.meta_version = data.get('version', self.meta_version)
+                    self.meta_platform = data.get('platform', self.meta_platform)
+                    
+                    # Update owner/repo for remote fallback
+                    if data.get('publisher'): self.owner = data.get('publisher')
+                    if data.get('app'): self.repo = data.get('app')
+                
+                # Extract assets if they exist
+                assets_to_extract = []
+                for f in z.namelist():
+                    if f.startswith("assets/") or f.startswith("app/"):
+                        assets_to_extract.append(f)
+                
+                if assets_to_extract:
+                    z.extractall(self.temp_extract_dir, members=assets_to_extract)
+                    
+        except Exception as e:
+            print(f"Error reading local package metadata: {e}")
+
+    def load_local_assets_to_ui(self):
+        """Loads icons and banner from the extracted temp dir."""
+        if not self.temp_extract_dir: return
+        
+        # Icon
+        icon_path = self.temp_extract_dir / "app" / "app-icon.ico"
+        if not icon_path.exists():
+             icon_path = self.temp_extract_dir / "app" / "app-icon.png"
+        
+        if icon_path.exists():
+            pix = QtGui.QPixmap(str(icon_path))
+            self.icon_label.setPixmap(pix.scaled(72, 72, QtCore.Qt.KeepAspectRatio, QtCore.Qt.SmoothTransformation))
+            
+        # Banner
+        banner_path = self.temp_extract_dir / "assets" / "splash.png"
+        if banner_path.exists():
+            pix = QtGui.QPixmap(str(banner_path))
+            self.banner.setPixmap(pix)
+
+    def closeEvent(self, event):
+        # Cleanup temp dir
+        if self.temp_extract_dir and self.temp_extract_dir.exists():
+            try:
+                shutil.rmtree(self.temp_extract_dir)
+            except:
+                pass
+        super().closeEvent(event)
 
     def log_msg(self, s: str):
         self.log.append(s)
@@ -956,6 +1141,9 @@ class InstallWindow(QtWidgets.QWidget):
         self.progress.setValue(val)
 
     def load_remote_assets(self):
+        if self.local_file_path:
+            return # Skip remote assets for local files
+
         # 1. Try Local details.xml if installed
         if self.installed_path:
             local_details = self.installed_path / "details.xml"
@@ -984,6 +1172,16 @@ class InstallWindow(QtWidgets.QWidget):
                     self.title_bar.title_label.setText(f"Instalar {self.app_name}")
                 else:
                     self.title_bar.title_label.setText(f"Ejecutar {self.app_name}")
+            
+            # Also store other metadata if available
+            if details.get('app'): self.meta_app = details['app']
+            if details.get('publisher'): self.meta_publisher = details['publisher']
+            if details.get('version'): self.meta_version = details['version']
+            if details.get('platform'): self.meta_platform = details['platform']
+            
+            # Update UI labels with new metadata
+            self.meta_lbl.setText(self.meta_publisher)
+            self.ver_lbl.setText(f"Versión: {self.meta_version} | Plataforma: {self.meta_platform}")
 
         # Icon
         try:
@@ -1139,7 +1337,7 @@ class InstallWindow(QtWidgets.QWidget):
         self.progress.setValue(0)
         self.log_msg("Iniciando instalación...")
         
-        worker = InstallWorker(self.repo, self.owner, self.shortname, self.app_name)
+        worker = InstallWorker(self.repo, self.owner, self.shortname, self.app_name, self.local_file_path, self.meta_app)
         worker.signals.log.connect(self.log_msg)
         worker.signals.progress.connect(self.set_progress)
         worker.signals.done.connect(self.install_finished)
@@ -1170,16 +1368,65 @@ class WorkerSignals(QtCore.QObject):
     ask_open_releases = QtCore.pyqtSignal(str)
 
 class InstallWorker(QtCore.QRunnable):
-    def __init__(self, repo: str, owner: str, shortname: str, app_name: str):
+    def __init__(self, repo: str, owner: str, shortname: str, app_name: str, local_file_path: str = None, meta_app_id: str = None):
         super().__init__()
         self.repo = repo
         self.owner = owner
         self.shortname = shortname
         self.app_name = app_name
+        self.local_file_path = local_file_path
+        self.meta_app_id = meta_app_id
         self.signals = WorkerSignals()
 
     def run(self):
         try:
+            if self.local_file_path:
+                # Offline Mode
+                self.signals.log.emit(f"Preparando instalación de paquete local...")
+                
+                # Parse filename for version/platform
+                filename = os.path.basename(self.local_file_path)
+                match = re.match(r'^(.+?)-([0-9A-Za-z\.\-_]+)-([0-9A-Za-z\._\-]+)\.iflapp$', filename, re.IGNORECASE)
+                if match:
+                    version = match.group(2)
+                    platformstr = match.group(3)
+                else:
+                    version = "local"
+                    platformstr = "unknown"
+
+                # Check compatibility (Double check)
+                if platformstr.lower() == 'danenone' and platform_tag() == 'win':
+                     self.signals.log.emit("Error: Paquete 'Danenone' (Linux) incompatible con Windows.")
+                     self.signals.done.emit(False, "")
+                     return
+
+                self.signals.log.emit("Extrayendo archivos...")
+                tmpdir = Path(tempfile.mkdtemp(prefix="flarm_iflapp_"))
+                extract_dir = tmpdir / "extract"
+                extract_dir.mkdir(parents=True, exist_ok=True)
+                
+                extract_archive(self.local_file_path, str(extract_dir))
+                
+                self.signals.log.emit("Instalando...")
+                # Use meta_app_id if available, otherwise fallback to shortname
+                app_id_to_use = self.meta_app_id if self.meta_app_id else self.shortname
+                dest_base = create_documents_app_folder(self.owner, app_id_to_use, version, platformstr)
+                move_install_tree(extract_dir, dest_base)
+                
+                # Shortcut logic
+                exe_path = find_executable(dest_base, self.shortname)
+                if exe_path:
+                    desktop = Path.home() / 'Desktop'
+                    shortcut_name = self.app_name if self.app_name else self.shortname
+                    shortcut_name = re.sub(r'[<>:"/\\|?*]', '', shortcut_name)
+                    create_shortcut(desktop, exe_path, shortcut_name)
+                    self.signals.log.emit(f"Acceso directo creado: {shortcut_name}")
+                
+                shutil.rmtree(tmpdir, ignore_errors=True)
+                self.signals.done.emit(True, str(dest_base))
+                return
+
+            # Online Mode
             self.signals.log.emit(f"Consultando GitHub API ({self.owner}/{self.repo})...")
             api = GITHUB_RELEASES_API.format(owner=self.owner, repo=self.repo)
             r = requests.get(api, timeout=15)
@@ -1226,7 +1473,19 @@ class InstallWorker(QtCore.QRunnable):
             extract_archive(str(downloaded), str(extract_dir))
             
             self.signals.log.emit("Instalando...")
-            dest_base = create_documents_app_folder(self.owner, self.shortname, version or "v1", platformstr or "unknown")
+            # Use meta_app_id if available (though for remote it might not be set in init, we should parse it from details.xml if possible)
+            # For remote, we download details.xml later. But we need the folder name NOW.
+            # Ideally we should have parsed details.xml BEFORE this.
+            # In InstallWindow.load_remote_assets, we do fetch details.xml but we don't store the 'app' tag in self.meta_app explicitly?
+            # Wait, InstallWindow DOES store self.meta_app if it parses local package.
+            # For remote, we need to ensure we have it.
+            
+            # If we are here, we might not have meta_app_id if it wasn't passed.
+            # But wait, InstallWindow.load_remote_assets calls get_remote_details which returns a dict.
+            # We should update InstallWindow to store that dict's 'app' into self.meta_app.
+            
+            app_id_to_use = self.meta_app_id if self.meta_app_id else self.shortname
+            dest_base = create_documents_app_folder(self.owner, app_id_to_use, version or "v1", platformstr or "unknown")
             move_install_tree(extract_dir, dest_base)
             
             # Download details.xml to install folder for future reference
@@ -1256,50 +1515,126 @@ class InstallWorker(QtCore.QRunnable):
             self.signals.log.emit(f"Error crítico: {ex}")
             self.signals.done.emit(False, "")
 
+def restart_pc():
+    """Restart the PC to apply registry changes."""
+    try:
+        if platform.system().lower() == 'windows':
+            subprocess.run(['shutdown', '/r', '/t', '5', '/c', 'Reiniciando para aplicar cambios de registro de Flarm Handler...'], check=False)
+            return True
+    except Exception:
+        pass
+    return False
+
+def handle_iflapp_file(file_path: str):
+    """Handle .iflapp file as offline installer package."""
+    try:
+        file_path = os.path.abspath(file_path)
+        if not os.path.exists(file_path):
+            QtWidgets.QMessageBox.critical(None, "Error", f"Archivo no encontrado: {file_path}")
+            return None
+        
+        if not file_path.lower().endswith('.iflapp'):
+            QtWidgets.QMessageBox.critical(None, "Error", "El archivo debe tener extensión .iflapp")
+            return None
+            
+        # Open unified InstallWindow
+        w = InstallWindow(repo="", owner="", local_file_path=file_path)
+        w.show()
+        return w
+        
+    except Exception as e:
+        QtWidgets.QMessageBox.critical(None, "Error de Instalación", f"Error al abrir el paquete:\n{str(e)}")
+        return None
+
 def main(argv):
     python_path = sys.executable
     script_path = os.path.abspath(argv[0])
     
-    # 1. Check Registry Integrity
-    is_reg = check_registry_keys(python_path, script_path)
-    
-    if not is_reg:
-        # If not registered, we MUST be admin to register system-wide or user-wide reliably
+    # === NO ARGUMENTS: Registry Integrity Check Mode ===
+    if len(argv) == 1:
+        # Verify admin mode first
         if not is_admin():
+            # Need to restart as admin
             if run_as_admin(argv):
-                return 0 
+                return 0  # Successfully elevated, this instance exits
             else:
-                pass
+                # User declined UAC or error occurred
+                app = QtWidgets.QApplication(argv)
+                QtWidgets.QMessageBox.warning(None, "Permisos Requeridos", 
+                    "Se requieren permisos de administrador para verificar la integridad del registro.")
+                return 1
+        
+        # Now we are admin, check registry integrity
+        is_reg = check_registry_keys(python_path, script_path)
+        registry_modified = False
+        
+        if not is_reg:
+            # Registry needs to be updated
+            success, msg, was_modified = ensure_registered(python_path, script_path)
+            registry_modified = was_modified
+            
+            if not success:
+                app = QtWidgets.QApplication(argv)
+                QtWidgets.QMessageBox.critical(None, "Error de Registro", 
+                    f"No se pudo registrar el protocolo y la extensión .iflapp:\n{msg}")
+                return 1
+        
+        # If registry was modified, restart PC
+        if registry_modified:
+            app = QtWidgets.QApplication(argv)
+            QtWidgets.QMessageBox.information(None, "Registro Actualizado", 
+                "El registro ha sido actualizado correctamente.\n\nEl sistema se reiniciará en 5 segundos para aplicar los cambios.")
+            restart_pc()
+            return 0
         else:
-            ensure_registered(python_path, script_path)
-
+            # Registry was already OK
+            app = QtWidgets.QApplication(argv)
+            QtWidgets.QMessageBox.information(None, "Integridad Verificada", 
+                "La integridad del registro está correcta. No se requieren cambios.")
+            return 0
+    
+    # === WITH ARGUMENTS: Normal Operation ===
     app = QtWidgets.QApplication(argv)
     app.setStyleSheet(GLOBAL_QSS)
     
-    # Protocol Launch
-    if len(argv) >= 2 and (argv[1].startswith(f"{SCHEME}:") or argv[1].startswith(f"{SCHEME}://")):
-        try:
-            repo, owner = parse_flarm_url(argv[1])
-            w = InstallWindow(repo, owner)
-            w.show()
-        except Exception as e:
-            QtWidgets.QMessageBox.critical(None, "Error", f"URL inválida: {e}")
-            return 1
-    else:
-        # Manual Mode
-        text, ok = QtWidgets.QInputDialog.getText(None, "Flarm Handler", "Introduce una URL de Flarm (flarmstore://owner.repo):")
-        if ok and text:
+    # Check if argument is a .iflapp file
+    if len(argv) >= 2:
+        arg = argv[1]
+        
+        # Handle .iflapp file
+        if arg.lower().endswith('.iflapp') or (os.path.exists(arg) and arg.lower().endswith('.iflapp')):
+            w = handle_iflapp_file(arg)
+            if w:
+                # Keep window alive
+                pass
+            else:
+                return 1
+        
+        # Handle flarmstore:// protocol
+        elif arg.startswith(f"{SCHEME}:") or arg.startswith(f"{SCHEME}://"):
             try:
-                repo, owner = parse_flarm_url(text)
+                repo, owner = parse_flarm_url(arg)
                 w = InstallWindow(repo, owner)
                 w.show()
             except Exception as e:
                 QtWidgets.QMessageBox.critical(None, "Error", f"URL inválida: {e}")
                 return 1
         else:
-            return 0
-
-    app.exec_()
+            # Unknown argument, show manual input
+            text, ok = QtWidgets.QInputDialog.getText(None, "Flarm Handler", 
+                f"Argumento no reconocido: {arg}\n\nIntroduce una URL de Flarm (flarmstore://owner.repo):")
+            if ok and text:
+                try:
+                    repo, owner = parse_flarm_url(text)
+                    w = InstallWindow(repo, owner)
+                    w.show()
+                except Exception as e:
+                    QtWidgets.QMessageBox.critical(None, "Error", f"URL inválida: {e}")
+                    return 1
+            else:
+                return 0
+    
+    return app.exec_()
 
 if __name__ == "__main__":
     sys.exit(main(sys.argv))

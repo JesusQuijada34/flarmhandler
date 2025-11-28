@@ -5,13 +5,18 @@
 ## 🚀 Características
 
 - **Protocolo `flarmstore://`**: Abre e instala paquetes directamente desde el navegador o enlaces compartidos.
+- **Paquetes Offline (`.iflapp`)**:
+  - Soporte para instalación sin conexión mediante archivos `.iflapp`.
+  - Asociación de archivos nativa con icono personalizado.
+  - Instalación automática con doble clic.
 - **Interfaz Moderna**:
   - Estilo visual inspirado en **Play Store** y **GitHub**.
   - **Modo Oscuro/Claro** automático (basado en QSS).
   - Barra de título personalizada estilo **Windows 11**.
 - **Verificación Inteligente**:
-  - Comprobación automática de claves de registro.
+  - Comprobación automática de claves de registro y asociaciones de archivo.
   - Auto-reparación con elevación de privilegios (Administrador) si es necesario.
+  - **Reinicio Automático** para aplicar cambios críticos del sistema.
 - **Soporte Multimedia**:
   - Visualización de `README.md` con soporte **Markdown** (imágenes, enlaces, código).
   - Carga dinámica de iconos y banners desde el repositorio remoto.
