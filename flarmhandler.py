@@ -351,15 +351,14 @@ def find_executable(root_dir: Path, shortname: str) -> Path | None:
                 return p
     return None
 
-def create_documents_app_folder(owner: str, shortname: str, version: str, platformstr: str) -> Path:
+def create_documents_app_folder(publisher: str, app: str, version: str, platformstr: str) -> Path:
     home = Path.home()
     if os.name == 'nt':
         documents = Path(os.path.join(os.environ.get('USERPROFILE',''), 'Documents'))
     else:
         documents = home / 'Documents'
-    # New format: {app}-{version}-{platform}
-    # shortname is the repo name which we treat as the app name
-    base = documents / 'FLARM Apps' / f"{shortname}-{version}-{platformstr}"
+    # New format: {publisher}.{app}.{version}-{platform}
+    base = documents / 'FLARM Apps' / f"{publisher}.{app}.{version}-{platformstr}"
     base.mkdir(parents=True, exist_ok=True)
     return base
 
@@ -848,25 +847,57 @@ def parse_details_xml(content: str) -> dict:
     """Parses details.xml content and returns a dict."""
     data = {}
     try:
-        # We can use regex for robustness against malformed XML or just simple extraction
-        patterns = {
-            'name': r'<name>(.*?)</name>',
-            'publisher': r'<publisher>(.*?)</publisher>',
-            'app': r'<app>(.*?)</app>',
-            'version': r'<version>(.*?)</version>',
-            'platform': r'<platform>(.*?)</platform>'
-        }
+        import xml.etree.ElementTree as ET
+        # Parse the XML content
+        root = ET.fromstring(content)
         
-        for key, pattern in patterns.items():
-            match = re.search(pattern, content, re.IGNORECASE)
-            if match:
-                data[key] = match.group(1)
+        # Extract direct children of root
+        for child in root:
+            tag_name = child.tag.lower()
+            if tag_name in ['name', 'publisher', 'app', 'version', 'platform', 'author']:
+                data[tag_name] = child.text.strip() if child.text else ""
     except Exception:
-        pass
+        # Fallback to regex if XML parsing fails
+        try:
+            patterns = {
+                'name': r'<name>(.*?)</name>',
+                'publisher': r'<publisher>(.*?)</publisher>',
+                'app': r'<app>(.*?)</app>',
+                'version': r'<version>(.*?)</version>',
+                'platform': r'<platform>(.*?)</platform>',
+                'author': r'<author>(.*?)</author>'
+            }
+            
+            for key, pattern in patterns.items():
+                match = re.search(pattern, content, re.IGNORECASE | re.DOTALL)
+                if match:
+                    data[key] = match.group(1).strip()
+        except Exception:
+            pass
     return data
 
+def find_installed_package(publisher: str, app: str, version: str, platform: str) -> Path | None:
+    """Checks if a specific package version is installed by exact folder name match."""
+    home = Path.home()
+    if os.name == 'nt':
+        documents = Path(os.path.join(os.environ.get('USERPROFILE',''), 'Documents'))
+    else:
+        documents = home / 'Documents'
+    
+    base_dir = documents / 'FLARM Apps'
+    if not base_dir.exists():
+        return None
+    
+    # Check for exact folder name: {publisher}.{app}.{version}-{platform}
+    folder_name = f"{publisher}.{app}.{version}-{platform}"
+    target_path = base_dir / folder_name
+    
+    if target_path.exists() and target_path.is_dir():
+        return target_path
+    return None
+
 def find_installed_path(owner: str, repo: str) -> Path | None:
-    """Checks if the app is installed in Documents/FLARM Apps."""
+    """Checks if the app is installed in Documents/FLARM Apps (legacy, loose match)."""
     home = Path.home()
     if os.name == 'nt':
         documents = Path(os.path.join(os.environ.get('USERPROFILE',''), 'Documents'))
@@ -877,13 +908,9 @@ def find_installed_path(owner: str, repo: str) -> Path | None:
     if not base_dir.exists():
         return None
         
-    # Look for folder starting with {repo}-
-    # We don't know the version or platform easily without parsing, but we can check if any folder starts with repo-
-    prefix = f"{repo}-"
+    # Look for folder containing publisher.app pattern
     for p in base_dir.iterdir():
-        if p.is_dir() and p.name.startswith(prefix):
-            # Verify it matches the pattern {repo}-{version}-{platform}
-            # This is a loose check, but sufficient to find if "some version" is installed.
+        if p.is_dir() and f".{repo}." in p.name:
             return p
     return None
 
@@ -895,7 +922,6 @@ class InstallWindow(QtWidgets.QWidget):
         self.local_file_path = local_file_path
         self.shortname = repo
         self.app_name = repo # Default fallback
-        self.installed_path = find_installed_path(owner, repo) if not local_file_path else None
         self.temp_extract_dir = None # To clean up later if needed
         
         # Metadata placeholders
@@ -903,10 +929,20 @@ class InstallWindow(QtWidgets.QWidget):
         self.meta_app = repo
         self.meta_version = "Unknown"
         self.meta_platform = "Unknown"
+        self.meta_author = owner  # For sharing local packages
 
         # Pre-load local package info if available
         if self.local_file_path:
             self.load_local_package_metadata()
+        
+        # Check for existing installation using exact metadata
+        self.installed_path = None
+        if self.meta_publisher != "Unknown" and self.meta_app != "Unknown" and self.meta_version != "Unknown" and self.meta_platform != "Unknown":
+            self.installed_path = find_installed_package(self.meta_publisher, self.meta_app, self.meta_version, self.meta_platform)
+        
+        # Fallback to loose match if exact match not found
+        if not self.installed_path and not local_file_path:
+            self.installed_path = find_installed_path(owner, repo)
 
         self.setWindowFlags(QtCore.Qt.FramelessWindowHint)
         self.resize(1000, 650)
@@ -1054,7 +1090,8 @@ class InstallWindow(QtWidgets.QWidget):
 
         # Offline Mode Adjustments (UI Updates)
         if self.local_file_path:
-            self.share_btn.setVisible(False)
+            # Enable share button for local packages if we have author info
+            # self.share_btn.setVisible(False)  # Keep it visible now
             self.meta_lbl.setText(f"{self.meta_publisher} (Local)")
             self.ver_lbl.setText(f"Versión: {self.meta_version} | Plataforma: {self.meta_platform}")
             
@@ -1086,6 +1123,7 @@ class InstallWindow(QtWidgets.QWidget):
                     self.meta_app = data.get('app', self.meta_app)
                     self.meta_version = data.get('version', self.meta_version)
                     self.meta_platform = data.get('platform', self.meta_platform)
+                    self.meta_author = data.get('author', self.meta_author)
                     
                     # Update owner/repo for remote fallback
                     if data.get('publisher'): self.owner = data.get('publisher')
@@ -1240,7 +1278,14 @@ class InstallWindow(QtWidgets.QWidget):
                 self.readme_view.setPlainText(f"Error loading details: {e}")
 
     def on_share(self):
-        long_url = f"https://github.com/{self.owner}/{self.repo}"
+        # Determine the GitHub URL
+        if self.local_file_path and self.meta_author and self.meta_app:
+            # For local packages, construct URL from author and app
+            long_url = f"https://github.com/{self.meta_author}/{self.meta_app}"
+        else:
+            # For remote packages, use owner and repo
+            long_url = f"https://github.com/{self.owner}/{self.repo}"
+        
         try:
             r = requests.get(f"https://is.gd/create.php?format=simple&url={long_url}", timeout=5)
             if r.ok:
@@ -1337,7 +1382,7 @@ class InstallWindow(QtWidgets.QWidget):
         self.progress.setValue(0)
         self.log_msg("Iniciando instalación...")
         
-        worker = InstallWorker(self.repo, self.owner, self.shortname, self.app_name, self.local_file_path, self.meta_app)
+        worker = InstallWorker(self.repo, self.owner, self.shortname, self.app_name, self.local_file_path, self.meta_app, self.meta_publisher)
         worker.signals.log.connect(self.log_msg)
         worker.signals.progress.connect(self.set_progress)
         worker.signals.done.connect(self.install_finished)
@@ -1368,7 +1413,7 @@ class WorkerSignals(QtCore.QObject):
     ask_open_releases = QtCore.pyqtSignal(str)
 
 class InstallWorker(QtCore.QRunnable):
-    def __init__(self, repo: str, owner: str, shortname: str, app_name: str, local_file_path: str = None, meta_app_id: str = None):
+    def __init__(self, repo: str, owner: str, shortname: str, app_name: str, local_file_path: str = None, meta_app_id: str = None, meta_publisher: str = None):
         super().__init__()
         self.repo = repo
         self.owner = owner
@@ -1376,6 +1421,7 @@ class InstallWorker(QtCore.QRunnable):
         self.app_name = app_name
         self.local_file_path = local_file_path
         self.meta_app_id = meta_app_id
+        self.meta_publisher = meta_publisher
         self.signals = WorkerSignals()
 
     def run(self):
@@ -1408,9 +1454,10 @@ class InstallWorker(QtCore.QRunnable):
                 extract_archive(self.local_file_path, str(extract_dir))
                 
                 self.signals.log.emit("Instalando...")
-                # Use meta_app_id if available, otherwise fallback to shortname
+                # Use meta values if available, otherwise fallback to defaults
+                publisher_to_use = self.meta_publisher if self.meta_publisher else self.owner
                 app_id_to_use = self.meta_app_id if self.meta_app_id else self.shortname
-                dest_base = create_documents_app_folder(self.owner, app_id_to_use, version, platformstr)
+                dest_base = create_documents_app_folder(publisher_to_use, app_id_to_use, version, platformstr)
                 move_install_tree(extract_dir, dest_base)
                 
                 # Shortcut logic
@@ -1473,19 +1520,10 @@ class InstallWorker(QtCore.QRunnable):
             extract_archive(str(downloaded), str(extract_dir))
             
             self.signals.log.emit("Instalando...")
-            # Use meta_app_id if available (though for remote it might not be set in init, we should parse it from details.xml if possible)
-            # For remote, we download details.xml later. But we need the folder name NOW.
-            # Ideally we should have parsed details.xml BEFORE this.
-            # In InstallWindow.load_remote_assets, we do fetch details.xml but we don't store the 'app' tag in self.meta_app explicitly?
-            # Wait, InstallWindow DOES store self.meta_app if it parses local package.
-            # For remote, we need to ensure we have it.
-            
-            # If we are here, we might not have meta_app_id if it wasn't passed.
-            # But wait, InstallWindow.load_remote_assets calls get_remote_details which returns a dict.
-            # We should update InstallWindow to store that dict's 'app' into self.meta_app.
-            
+            # Use meta values if available, otherwise fallback to defaults
+            publisher_to_use = self.meta_publisher if self.meta_publisher else self.owner
             app_id_to_use = self.meta_app_id if self.meta_app_id else self.shortname
-            dest_base = create_documents_app_folder(self.owner, app_id_to_use, version or "v1", platformstr or "unknown")
+            dest_base = create_documents_app_folder(publisher_to_use, app_id_to_use, version or "v1", platformstr or "unknown")
             move_install_tree(extract_dir, dest_base)
             
             # Download details.xml to install folder for future reference

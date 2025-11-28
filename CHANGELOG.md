@@ -2,6 +2,45 @@
 
 Todas las mejoras y cambios notables en este proyecto serán documentados en este archivo.
 
+## [v2.0.0] - 2025-11-28
+
+### ✨ Añadido
+- **Compatibilidad de Plataforma**:
+  - Verificación automática de compatibilidad Windows (Knosthalij) vs Linux (Danenone).
+  - Bloqueo de instalación de paquetes incompatibles con mensajes claros.
+  - Función `check_platform_compatibility()` para validación.
+- **Detección de Paquetes Instalados**:
+  - Nueva función `find_installed_package()` para búsqueda exacta por nombre de carpeta.
+  - Verificación automática al abrir paquetes locales o remotos.
+  - Muestra botones "Ejecutar" y "Desinstalar" cuando el paquete ya está instalado.
+- **Compartir Mejorado para Paquetes Locales**:
+  - Extracción del campo `<author>` desde `details.xml`.
+  - Generación de URLs de GitHub usando `author` y `app` para paquetes locales.
+  - Botón "Compartir" habilitado para paquetes `.iflapp`.
+- **Carga de Recursos Mejorada**:
+  - Extracción automática de `details.xml`, splash e iconos desde paquetes `.iflapp`.
+  - Fallback a recursos remotos si los locales no están disponibles.
+  - Métodos `load_local_package_metadata()` y `load_local_assets_to_ui()`.
+
+### ⚡ Mejorado
+- **Formato de Carpetas de Instalación**:
+  - Nuevo formato: `{publisher}.{app}.{version}-{platform}`.
+  - Ejemplo: `Influent.packagemaker.v1.2-25.11-34.55-Knosthalij`.
+  - Función `create_documents_app_folder()` actualizada con nuevos parámetros.
+- **Parseo de XML**:
+  - Reemplazado parseo basado en regex con `xml.etree.ElementTree`.
+  - Manejo correcto de etiquetas XML anidadas.
+  - Extracción de campos: `name`, `publisher`, `app`, `version`, `platform`, `author`.
+  - Fallback a regex para XML malformado.
+- **Metadatos de Paquetes**:
+  - Almacenamiento de `meta_publisher`, `meta_app`, `meta_version`, `meta_platform`, `meta_author`.
+  - Uso de metadatos para nombrado de carpetas y compartir.
+
+### 🐛 Corregido
+- **Parseo de XML**: Corregido bug donde las etiquetas XML se incluían en los valores extraídos.
+- **Detección de Instalación**: Ahora usa coincidencia exacta de nombre de carpeta en lugar de coincidencia parcial.
+- **Compartir**: URLs de GitHub generadas correctamente para paquetes locales usando información del autor.
+
 ## [Unreleased] - 2025-11-28
 
 ### ✨ Añadido

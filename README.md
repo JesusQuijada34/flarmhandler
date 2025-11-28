@@ -9,6 +9,14 @@
   - Soporte para instalación sin conexión mediante archivos `.iflapp`.
   - Asociación de archivos nativa con icono personalizado.
   - Instalación automática con doble clic.
+  - Extracción automática de metadatos y recursos (splash, iconos) desde el paquete.
+- **Compatibilidad de Plataforma**:
+  - Verificación automática de compatibilidad Windows/Linux.
+  - Bloqueo de instalación de paquetes incompatibles (Danenone en Windows, Knosthalij en Linux).
+- **Detección de Paquetes Instalados**:
+  - Verifica automáticamente si un paquete ya está instalado.
+  - Muestra botones "Ejecutar", "Instalar" y "Desinstalar" según corresponda.
+  - Funciona tanto para paquetes locales como remotos.
 - **Interfaz Moderna**:
   - Estilo visual inspirado en **Play Store** y **GitHub**.
   - **Modo Oscuro/Claro** automático (basado en QSS).
@@ -19,11 +27,15 @@
   - **Reinicio Automático** para aplicar cambios críticos del sistema.
 - **Soporte Multimedia**:
   - Visualización de `README.md` con soporte **Markdown** (imágenes, enlaces, código).
-  - Carga dinámica de iconos y banners desde el repositorio remoto.
+  - Carga dinámica de iconos y banners desde el repositorio remoto o paquete local.
 - **Gestión de Instalación**:
   - Descarga, extracción e instalación automatizada.
   - Creación de accesos directos en el Escritorio.
   - Barra de progreso real.
+  - Formato de carpetas: `{publisher}.{app}.{version}-{platform}`
+- **Compartir Mejorado**:
+  - Genera enlaces cortos con is.gd para paquetes remotos y locales.
+  - Para paquetes locales, extrae información del autor desde el XML.
 
 ## 🛠️ Instalación y Uso
 
