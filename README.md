@@ -24,7 +24,7 @@
 - **Verificación Inteligente**:
   - Comprobación automática de claves de registro y asociaciones de archivo.
   - Auto-reparación con elevación de privilegios (Administrador) si es necesario.
-  - **Reinicio Automático** para aplicar cambios críticos del sistema.
+  - **Reinicio Automático** (Opcional) para aplicar cambios críticos del sistema si es necesario.
 - **Soporte Multimedia**:
   - Visualización de `README.md` con soporte **Markdown** (imágenes, enlaces, código).
   - Carga dinámica de iconos y banners desde el repositorio remoto o paquete local.
@@ -32,7 +32,7 @@
   - Descarga, extracción e instalación automatizada.
   - Creación de accesos directos en el Escritorio.
   - Barra de progreso real.
-  - Formato de carpetas: `{publisher}.{app}.{version}-{platform}`
+  - Formato de carpetas: `{publisher}-{app}-{version}-{platform}`
 - **Compartir Mejorado**:
   - Genera enlaces cortos con is.gd para paquetes remotos y locales.
   - Para paquetes locales, extrae información del autor desde el XML.

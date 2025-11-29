@@ -389,8 +389,8 @@ def create_documents_app_folder(publisher: str, app: str, version: str, platform
         documents = Path(os.path.join(os.environ.get('USERPROFILE',''), 'Documents'))
     else:
         documents = home / 'Documents'
-    # New format: {publisher}.{app}.{version}-{platform}
-    base = documents / 'FLARM Apps' / f"{publisher}.{app}.{version}-{platformstr}"
+    # New format: {publisher}-{app}-{version}-{platform}
+    base = documents / 'FLARM Apps' / f"{publisher}-{app}-{version}-{platformstr}"
     base.mkdir(parents=True, exist_ok=True)
     return base
 
@@ -801,8 +801,8 @@ def ensure_registered(python_path: str, script_path: str) -> tuple[bool, str, bo
         # If failed, maybe we need admin rights (though HKCU shouldn't need it)
         # But if we were trying HKCR before, we might need it.
         # Our new logic prefers HKCU.
-        if not is_admin():
-            return False, "ELEVATION_REQUIRED", False
+        # if not is_admin():
+        #    return False, "ELEVATION_REQUIRED", False
         return False, msg, False
     if 'linux' in system:
         success, msg = register_scheme_linux(python_path, script_path)
@@ -1056,8 +1056,8 @@ def find_installed_package(publisher: str, app: str, version: str, platform: str
     if not base_dir.exists():
         return None
     
-    # Check for exact folder name: {publisher}.{app}.{version}-{platform}
-    folder_name = f"{publisher}.{app}.{version}-{platform}"
+    # Check for exact folder name: {publisher}-{app}-{version}-{platform}
+    folder_name = f"{publisher}-{app}-{version}-{platform}"
     target_path = base_dir / folder_name
     
     if target_path.exists() and target_path.is_dir():
@@ -1788,28 +1788,15 @@ def main(argv):
     python_path = sys.executable
     script_path = os.path.abspath(argv[0])
     
-    # === FORCED ADMIN MODE ===
-    # The user requested to force admin and registration on every run
-    if not is_admin():
-        # Restart as admin immediately
-        if run_as_admin(argv):
-            return 0  # Successfully elevated
-        else:
-            # User declined UAC
-            return 1
-
-    # === FORCED REGISTRATION (ALWAYS) ===
-    # We are now Admin. Force register keys every time.
-    # This ensures paths are always correct and "knots" are untied.
+    # === REGISTRATION ===
+    # Try to register keys in HKCU (User-level) every time to ensure consistency.
+    # This does NOT require admin rights.
     if platform.system().lower() == 'windows':
         try:
             # register_scheme_windows now includes clean reset (delete + create)
             success, msg = register_scheme_windows(python_path, script_path)
-            if not success:
-                app = QtWidgets.QApplication(argv)
-                app.setStyleSheet(GLOBAL_QSS)
-                QtWidgets.QMessageBox.warning(None, "Advertencia de Registro", 
-                    f"No se pudo actualizar el registro: {msg}")
+            # We don't warn if it fails silently, or maybe we should?
+            # For now, let's just ignore if it fails, as the app can still run.
         except Exception as e:
             pass
 

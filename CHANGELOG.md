@@ -24,8 +24,8 @@ Todas las mejoras y cambios notables en este proyecto serán documentados en est
 
 ### ⚡ Mejorado
 - **Formato de Carpetas de Instalación**:
-  - Nuevo formato: `{publisher}.{app}.{version}-{platform}`.
-  - Ejemplo: `Influent.packagemaker.v1.2-25.11-34.55-Knosthalij`.
+  - Nuevo formato: `{publisher}-{app}-{version}-{platform}`.
+  - Ejemplo: `Influent-packagemaker-v1.2-25.11-34.55-Knosthalij`.
   - Función `create_documents_app_folder()` actualizada con nuevos parámetros.
 - **Parseo de XML**:
   - Reemplazado parseo basado en regex con `xml.etree.ElementTree`.
@@ -40,6 +40,7 @@ Todas las mejoras y cambios notables en este proyecto serán documentados en est
 - **Parseo de XML**: Corregido bug donde las etiquetas XML se incluían en los valores extraídos.
 - **Detección de Instalación**: Ahora usa coincidencia exacta de nombre de carpeta en lugar de coincidencia parcial.
 - **Compartir**: URLs de GitHub generadas correctamente para paquetes locales usando información del autor.
+- **Permisos**: Eliminado el requisito forzoso de permisos de Administrador para la instalación y ejecución. Ahora se prefiere el registro en HKCU (Usuario Actual).
 
 ## [Unreleased] - 2025-11-28
 
