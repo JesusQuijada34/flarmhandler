@@ -61,6 +61,38 @@ QWidget {
     font-size: 14px;
 }
 
+/* MessageBox Styling - Fix white text on white background */
+QMessageBox {
+    background-color: #ffffff;
+}
+QMessageBox QLabel {
+    color: #202124;
+    background-color: transparent;
+}
+QMessageBox QPushButton {
+    background-color: #ffffff;
+    color: #ff6d00;
+    border: 1px solid #dadce0;
+    border-radius: 4px;
+    padding: 8px 24px;
+    min-width: 80px;
+}
+QMessageBox QPushButton:hover {
+    background-color: #fff3e0;
+    border-color: #ffb74d;
+}
+QMessageBox QPushButton:pressed {
+    background-color: #ffe0b2;
+}
+QMessageBox QPushButton:default {
+    background-color: #ff6d00;
+    color: #ffffff;
+    border: none;
+}
+QMessageBox QPushButton:default:hover {
+    background-color: #f57c00;
+}
+
 /* Scrollbars */
 QScrollBar:vertical {
     border: none;
@@ -419,55 +451,158 @@ def create_shortcut(desktop_path: Path, target: Path, name: str, args: str = "")
         return str(file_path)
 
 # --- Registry & Protocol Registration ---
-def check_registry_keys(python_path: str, script_path: str) -> bool:
-    if winreg is None: return False
-    expected_cmd = f"\"{python_path}\" \"{script_path}\" \"%1\""
-    expected_icon = get_icon_path()
+def check_registry_keys(python_path: str, script_path: str) -> tuple[bool, list[str]]:
+    """Check registry keys and return (is_valid, list_of_issues)."""
+    if winreg is None: 
+        return False, ["winreg module not available"]
     
-    def normalize(s):
-        return os.path.normcase(os.path.abspath(s) if s else "")
+    # Expected commands with flags based on execution mode
+    if getattr(sys, 'frozen', False):
+        # Compiled: "C:\Path\To\App.exe" -u "%1"
+        exe_path = python_path
+        expected_cmd_protocol = f'"{exe_path}" -u "%1"'
+        expected_cmd_file = f'"{exe_path}" -l "%1"'
+    else:
+        # Script: "python.exe" "script.py" -u "%1"
+        expected_cmd_protocol = f'"{python_path}" "{script_path}" -u "%1"'
+        expected_cmd_file = f'"{python_path}" "{script_path}" -l "%1"'
+        
+    expected_icon = get_icon_path()
+    issues = []
+    
+    def normalize_path(s):
+        """Normalize paths for comparison, handling quotes and case."""
+        if not s:
+            return ""
+        # Remove quotes and normalize
+        s = s.strip().strip('"').strip("'")
+        return os.path.normcase(os.path.abspath(s))
+    
+    def normalize_cmd(cmd):
+        """Normalize command strings for comparison."""
+        if not cmd:
+            return ""
+        # Remove extra spaces, normalize quotes and case
+        # Replace different quote styles
+        cmd = cmd.replace("'", '"')
+        # Normalize multiple spaces to single space
+        cmd = ' '.join(cmd.split())
+        return cmd.lower()
+    
+    def extract_paths_from_cmd(cmd):
+        """Extract paths from a command string (1 or 2 paths)."""
+        if not cmd:
+            return None, None
+        
+        import re
+        # Pattern 1: "python" "script" -flag ...
+        pattern_script = r'"([^"]+)"\s+"([^"]+)"'
+        match_script = re.search(pattern_script, cmd)
+        
+        if match_script:
+            return normalize_path(match_script.group(1)), normalize_path(match_script.group(2))
+            
+        # Pattern 2: "exe" -flag ...
+        pattern_exe = r'"([^"]+)"'
+        match_exe = re.search(pattern_exe, cmd)
+        
+        if match_exe:
+            # Return exe path as first arg, None as second
+            return normalize_path(match_exe.group(1)), None
+            
+        return None, None
 
-    # Helper to check a key
-    def check_key(root, key_path, expected_val=None):
+    # Helper to check a key with better error reporting
+    def check_key(root, key_path, expected_val=None, key_name=""):
         try:
             key = winreg.OpenKey(root, key_path)
             val, _ = winreg.QueryValueEx(key, "")
             winreg.CloseKey(key)
+            
             if expected_val:
-                return val.lower() == expected_val.lower()
+                # For commands, normalize and compare
+                if "command" in key_path.lower():
+                    val_norm = normalize_cmd(val)
+                    exp_norm = normalize_cmd(expected_val)
+                    
+                    if val_norm != exp_norm:
+                        # Check if it's just a path mismatch
+                        reg_py, reg_scr = extract_paths_from_cmd(val)
+                        exp_py, exp_scr = extract_paths_from_cmd(expected_val)
+                        
+                        if reg_py and exp_py:
+                            # Compare first path (Python or Exe)
+                            if reg_py != exp_py:
+                                issues.append(f"{key_name}: ruta principal cambió ({os.path.basename(reg_py)} → {os.path.basename(exp_py)})")
+                                return False
+                            
+                            # Compare second path (Script) if expected
+                            if exp_scr:
+                                if not reg_scr or reg_scr != exp_scr:
+                                    issues.append(f"{key_name}: ruta del script cambió ({os.path.basename(reg_scr) if reg_scr else 'None'} → {os.path.basename(exp_scr)})")
+                                    return False
+                            elif reg_scr:
+                                # We didn't expect a script path but got one (switched from script to exe?)
+                                issues.append(f"{key_name}: tipo de ejecución cambió (Script → Exe)")
+                                return False
+                        
+                        issues.append(f"{key_name}: comando desactualizado")
+                        return False
+                else:
+                    if val.lower() != expected_val.lower():
+                        issues.append(f"{key_name}: valor no coincide")
+                        return False
             return True
-        except Exception:
+        except FileNotFoundError:
+            issues.append(f"{key_name}: clave no existe")
+            return False
+        except Exception as e:
+            issues.append(f"{key_name}: error al leer ({str(e)})")
             return False
 
-    # 1. Check Protocol in HKCU
-    if not check_key(winreg.HKEY_CURRENT_USER, rf"Software\Classes\{SCHEME}\shell\open\command", expected_cmd):
-        if not check_key(winreg.HKEY_CLASSES_ROOT, rf"{SCHEME}\shell\open\command", expected_cmd):
-            return False
+    # 1. Check Protocol in HKCU or HKCR
+    protocol_ok = check_key(winreg.HKEY_CURRENT_USER, rf"Software\Classes\{SCHEME}\shell\open\command", 
+                           expected_cmd_protocol, "Protocolo flarmstore (HKCU)")
+    if not protocol_ok:
+        # Try HKCR as fallback
+        protocol_ok = check_key(winreg.HKEY_CLASSES_ROOT, rf"{SCHEME}\shell\open\command", 
+                               expected_cmd_protocol, "Protocolo flarmstore (HKCR)")
             
-    # 2. Check .iflapp extension in HKCU
-    if not check_key(winreg.HKEY_CURRENT_USER, rf"Software\Classes\.iflapp", "Flarm.Package"):
-        if not check_key(winreg.HKEY_CLASSES_ROOT, rf".iflapp", "Flarm.Package"):
-            return False
+    # 2. Check .iflapp extension in HKCU or HKCR
+    ext_ok = check_key(winreg.HKEY_CURRENT_USER, rf"Software\Classes\.iflapp", 
+                      "Flarm.Package", "Extensión .iflapp (HKCU)")
+    if not ext_ok:
+        # Try HKCR as fallback
+        ext_ok = check_key(winreg.HKEY_CLASSES_ROOT, rf".iflapp", 
+                          "Flarm.Package", "Extensión .iflapp (HKCR)")
             
-    # 3. Check Icon for Flarm.Package
-    # We check if the current icon matches what we expect. If not, we return False to trigger an update.
-    # We try to match either raw path or path,0
+    # 3. Check Icon for Flarm.Package (optional, don't fail if missing)
     try:
         key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Software\Classes\Flarm.Package\DefaultIcon")
         val, _ = winreg.QueryValueEx(key, "")
         winreg.CloseKey(key)
         
         # Normalize paths for comparison
-        current_icon = val.lower().replace(",0", "")
-        target_icon = expected_icon.lower()
+        current_icon = normalize_path(val.replace(",0", ""))
+        target_icon = normalize_path(expected_icon)
         
         if current_icon != target_icon:
-            return False
+            issues.append("Icono: ruta no coincide (se actualizará)")
+    except FileNotFoundError:
+        issues.append("Icono: no configurado (se agregará)")
     except Exception:
-        # Key doesn't exist or error reading it
-        return False
+        # Icon is optional, don't fail
+        pass
+    
+    # 4. Check Flarm.Package command (with -l flag)
+    pkg_cmd_ok = check_key(winreg.HKEY_CURRENT_USER, r"Software\Classes\Flarm.Package\shell\open\command",
+                          expected_cmd_file, "Comando Flarm.Package")
             
-    return True
+    # Registry is valid if protocol and extension are OK
+    # Icon and package command issues are warnings but not critical
+    is_valid = protocol_ok and ext_ok and pkg_cmd_ok
+    
+    return is_valid, issues
 
 def get_icon_path() -> str:
     """Get the correct path to flarmpack.ico whether running as script or compiled."""
@@ -490,24 +625,57 @@ def register_scheme_windows(python_path: str, script_path: str) -> tuple[bool, s
     if winreg is None:
         return False, "winreg module not available"
     
-    cmd = f"\"{python_path}\" \"{script_path}\" \"%1\""
+    # Determine correct command based on execution mode (Script vs Frozen/Compiled)
+    if getattr(sys, 'frozen', False):
+        # Compiled (.exe): python_path is the executable, script_path is redundant/same
+        # Command: "C:\Path\To\App.exe" -u "%1"
+        exe_path = python_path
+        cmd_protocol = f'"{exe_path}" -u "%1"'
+        cmd_file = f'"{exe_path}" -l "%1"'
+    else:
+        # Script (.py): python_path is python.exe, script_path is script.py
+        # Command: "python.exe" "script.py" -u "%1"
+        cmd_protocol = f'"{python_path}" "{script_path}" -u "%1"'
+        cmd_file = f'"{python_path}" "{script_path}" -l "%1"'
+        
     icon_path = get_icon_path()
     
     try:
+        # --- CLEANUP: Remove old keys to prevent conflicts ---
+        def delete_key_recursive(root, key_path):
+            try:
+                open_key = winreg.OpenKey(root, key_path, 0, winreg.KEY_ALL_ACCESS)
+                info = winreg.QueryInfoKey(open_key)
+                for i in range(0, info[0]):
+                    # Delete subkeys first
+                    subkey = winreg.EnumKey(open_key, 0)
+                    delete_key_recursive(root, key_path + "\\" + subkey)
+                winreg.DeleteKey(root, key_path)
+                winreg.CloseKey(open_key)
+            except Exception:
+                pass
+
+        # Delete existing keys in HKCU
+        delete_key_recursive(winreg.HKEY_CURRENT_USER, rf"Software\Classes\{SCHEME}")
+        delete_key_recursive(winreg.HKEY_CURRENT_USER, r"Software\Classes\.iflapp")
+        delete_key_recursive(winreg.HKEY_CURRENT_USER, r"Software\Classes\Flarm.Package")
+        
+        # --- REGISTRATION: Create new keys ---
+        
         # 1. Register Protocol flarmstore://
         key_path = rf"Software\Classes\{SCHEME}"
         key = winreg.CreateKey(winreg.HKEY_CURRENT_USER, key_path)
         winreg.SetValueEx(key, None, 0, winreg.REG_SZ, "URL:Flarm Store Protocol")
         winreg.SetValueEx(key, "URL Protocol", 0, winreg.REG_SZ, "")
         
-        # Icon
+        # Icon for protocol
         if os.path.exists(icon_path):
             icon_key = winreg.CreateKey(key, "DefaultIcon")
             winreg.SetValueEx(icon_key, None, 0, winreg.REG_SZ, f"{icon_path},0")
             winreg.CloseKey(icon_key)
             
         shell = winreg.CreateKey(key, r"shell\open\command")
-        winreg.SetValueEx(shell, None, 0, winreg.REG_SZ, cmd)
+        winreg.SetValueEx(shell, None, 0, winreg.REG_SZ, cmd_protocol)
         winreg.CloseKey(shell)
         winreg.CloseKey(key)
         
@@ -517,7 +685,7 @@ def register_scheme_windows(python_path: str, script_path: str) -> tuple[bool, s
         winreg.SetValueEx(key_ext, None, 0, winreg.REG_SZ, "Flarm.Package")
         winreg.CloseKey(key_ext)
         
-        # Flarm.Package -> Command
+        # Flarm.Package -> Command with -l flag
         key_progid = winreg.CreateKey(winreg.HKEY_CURRENT_USER, r"Software\Classes\Flarm.Package")
         winreg.SetValueEx(key_progid, None, 0, winreg.REG_SZ, "Flarm Package")
         
@@ -527,7 +695,7 @@ def register_scheme_windows(python_path: str, script_path: str) -> tuple[bool, s
             winreg.CloseKey(icon_key)
             
         shell_progid = winreg.CreateKey(key_progid, r"shell\open\command")
-        winreg.SetValueEx(shell_progid, None, 0, winreg.REG_SZ, cmd)
+        winreg.SetValueEx(shell_progid, None, 0, winreg.REG_SZ, cmd_file)
         winreg.CloseKey(shell_progid)
         winreg.CloseKey(key_progid)
 
@@ -1137,7 +1305,17 @@ class InstallWindow(QtWidgets.QWidget):
                 
                 if assets_to_extract:
                     z.extractall(self.temp_extract_dir, members=assets_to_extract)
-                    
+            
+            # Check Platform Compatibility
+            is_compat, msg = check_platform_compatibility(self.meta_platform)
+            if not is_compat:
+                self.install_btn.setEnabled(False)
+                self.install_btn.setText("No Compatible")
+                self.install_btn.setStyleSheet("background-color: #e0e0e0; color: #888; border: 1px solid #ccc;")
+                self.ver_lbl.setText(f"Versión: {self.meta_version} | Plataforma: {self.meta_platform} (INCOMPATIBLE)")
+                self.ver_lbl.setStyleSheet("color: #d93025; font-weight: bold;")
+                QtWidgets.QMessageBox.warning(self, "Incompatible", msg)
+
         except Exception as e:
             print(f"Error reading local package metadata: {e}")
 
@@ -1220,6 +1398,16 @@ class InstallWindow(QtWidgets.QWidget):
             # Update UI labels with new metadata
             self.meta_lbl.setText(self.meta_publisher)
             self.ver_lbl.setText(f"Versión: {self.meta_version} | Plataforma: {self.meta_platform}")
+            
+            # Check Platform Compatibility
+            is_compat, msg = check_platform_compatibility(self.meta_platform)
+            if not is_compat:
+                self.install_btn.setEnabled(False)
+                self.install_btn.setText("No Compatible")
+                self.install_btn.setStyleSheet("background-color: #e0e0e0; color: #888; border: 1px solid #ccc;")
+                self.ver_lbl.setText(f"Versión: {self.meta_version} | Plataforma: {self.meta_platform} (INCOMPATIBLE)")
+                self.ver_lbl.setStyleSheet("color: #d93025; font-weight: bold;")
+                # We don't show a popup here to avoid spamming if just viewing, but the UI is clear.
 
         # Icon
         try:
@@ -1553,11 +1741,23 @@ class InstallWorker(QtCore.QRunnable):
             self.signals.log.emit(f"Error crítico: {ex}")
             self.signals.done.emit(False, "")
 
-def restart_pc():
-    """Restart the PC to apply registry changes."""
+def restart_pc_delayed(seconds: int = 60):
+    """Schedule a PC restart after specified seconds."""
     try:
         if platform.system().lower() == 'windows':
-            subprocess.run(['shutdown', '/r', '/t', '5', '/c', 'Reiniciando para aplicar cambios de registro de Flarm Handler...'], check=False)
+            subprocess.run(['shutdown', '/r', '/t', str(seconds), '/c', 
+                          f'Reiniciando en {seconds} segundos para aplicar cambios de registro de Flarm Handler...'], 
+                          check=False)
+            return True
+    except Exception:
+        pass
+    return False
+
+def cancel_restart():
+    """Cancel a scheduled restart."""
+    try:
+        if platform.system().lower() == 'windows':
+            subprocess.run(['shutdown', '/a'], check=False)
             return True
     except Exception:
         pass
@@ -1588,89 +1788,104 @@ def main(argv):
     python_path = sys.executable
     script_path = os.path.abspath(argv[0])
     
-    # === NO ARGUMENTS: Registry Integrity Check Mode ===
-    if len(argv) == 1:
-        # Verify admin mode first
-        if not is_admin():
-            # Need to restart as admin
-            if run_as_admin(argv):
-                return 0  # Successfully elevated, this instance exits
-            else:
-                # User declined UAC or error occurred
-                app = QtWidgets.QApplication(argv)
-                QtWidgets.QMessageBox.warning(None, "Permisos Requeridos", 
-                    "Se requieren permisos de administrador para verificar la integridad del registro.")
-                return 1
-        
-        # Now we are admin, check registry integrity
-        is_reg = check_registry_keys(python_path, script_path)
-        registry_modified = False
-        
-        if not is_reg:
-            # Registry needs to be updated
-            success, msg, was_modified = ensure_registered(python_path, script_path)
-            registry_modified = was_modified
-            
+    # === FORCED ADMIN MODE ===
+    # The user requested to force admin and registration on every run
+    if not is_admin():
+        # Restart as admin immediately
+        if run_as_admin(argv):
+            return 0  # Successfully elevated
+        else:
+            # User declined UAC
+            return 1
+
+    # === FORCED REGISTRATION (ALWAYS) ===
+    # We are now Admin. Force register keys every time.
+    # This ensures paths are always correct and "knots" are untied.
+    if platform.system().lower() == 'windows':
+        try:
+            # register_scheme_windows now includes clean reset (delete + create)
+            success, msg = register_scheme_windows(python_path, script_path)
             if not success:
                 app = QtWidgets.QApplication(argv)
-                QtWidgets.QMessageBox.critical(None, "Error de Registro", 
-                    f"No se pudo registrar el protocolo y la extensión .iflapp:\n{msg}")
-                return 1
-        
-        # If registry was modified, restart PC
-        if registry_modified:
-            app = QtWidgets.QApplication(argv)
-            QtWidgets.QMessageBox.information(None, "Registro Actualizado", 
-                "El registro ha sido actualizado correctamente.\n\nEl sistema se reiniciará en 5 segundos para aplicar los cambios.")
-            restart_pc()
-            return 0
-        else:
-            # Registry was already OK
-            app = QtWidgets.QApplication(argv)
-            QtWidgets.QMessageBox.information(None, "Integridad Verificada", 
-                "La integridad del registro está correcta. No se requieren cambios.")
-            return 0
-    
-    # === WITH ARGUMENTS: Normal Operation ===
+                app.setStyleSheet(GLOBAL_QSS)
+                QtWidgets.QMessageBox.warning(None, "Advertencia de Registro", 
+                    f"No se pudo actualizar el registro: {msg}")
+        except Exception as e:
+            pass
+
+    # === APP EXECUTION ===
     app = QtWidgets.QApplication(argv)
     app.setStyleSheet(GLOBAL_QSS)
     
-    # Check if argument is a .iflapp file
+    # Parse arguments with explicit flags
     if len(argv) >= 2:
-        arg = argv[1]
+        arg1 = argv[1].strip().strip('"').strip("'")
         
-        # Handle .iflapp file
-        if arg.lower().endswith('.iflapp') or (os.path.exists(arg) and arg.lower().endswith('.iflapp')):
-            w = handle_iflapp_file(arg)
-            if w:
-                # Keep window alive
-                pass
-            else:
-                return 1
-        
-        # Handle flarmstore:// protocol
-        elif arg.startswith(f"{SCHEME}:") or arg.startswith(f"{SCHEME}://"):
+        # Check for explicit flags
+        if arg1 == "-u" and len(argv) >= 3:
+            # URL flag: -u flarmstore://owner.repo
+            url = argv[2].strip().strip('"').strip("'")
             try:
-                repo, owner = parse_flarm_url(arg)
+                repo, owner = parse_flarm_url(url)
                 w = InstallWindow(repo, owner)
                 w.show()
             except Exception as e:
                 QtWidgets.QMessageBox.critical(None, "Error", f"URL inválida: {e}")
                 return 1
+                
+        elif arg1 == "-l" and len(argv) >= 3:
+            # Local file flag: -l "path/to/file.iflapp"
+            file_path = argv[2].strip().strip('"').strip("'")
+            file_path = os.path.abspath(file_path)
+            w = handle_iflapp_file(file_path)
+            if not w:
+                return 1
+                
         else:
-            # Unknown argument, show manual input
-            text, ok = QtWidgets.QInputDialog.getText(None, "Flarm Handler", 
-                f"Argumento no reconocido: {arg}\n\nIntroduce una URL de Flarm (flarmstore://owner.repo):")
-            if ok and text:
+            # No explicit flag, try to auto-detect (backward compatibility)
+            arg = arg1
+            arg_path = os.path.abspath(arg) if not arg.startswith(f"{SCHEME}:") else arg
+            
+            # Priority 1: Check if it's an existing .iflapp file
+            if os.path.exists(arg_path) and arg_path.lower().endswith('.iflapp'):
+                w = handle_iflapp_file(arg_path)
+                if not w:
+                    return 1
+            
+            # Priority 2: Check if argument ends with .iflapp (even if file doesn't exist yet)
+            elif arg.lower().endswith('.iflapp'):
+                w = handle_iflapp_file(arg)
+                if not w:
+                    return 1
+            
+            # Priority 3: Handle flarmstore:// protocol
+            elif arg.startswith(f"{SCHEME}:") or arg.startswith(f"{SCHEME}://"):
                 try:
-                    repo, owner = parse_flarm_url(text)
+                    repo, owner = parse_flarm_url(arg)
                     w = InstallWindow(repo, owner)
                     w.show()
                 except Exception as e:
                     QtWidgets.QMessageBox.critical(None, "Error", f"URL inválida: {e}")
                     return 1
             else:
-                return 0
+                # Unknown argument, show manual input
+                text, ok = QtWidgets.QInputDialog.getText(None, "Flarm Handler", 
+                    f"Argumento no reconocido: {arg}\n\nIntroduce una URL de Flarm (flarmstore://owner.repo):")
+                if ok and text:
+                    try:
+                        repo, owner = parse_flarm_url(text)
+                        w = InstallWindow(repo, owner)
+                        w.show()
+                    except Exception as e:
+                        QtWidgets.QMessageBox.critical(None, "Error", f"URL inválida: {e}")
+                        return 1
+                else:
+                    return 0
+    else:
+        # No arguments - Just show a success message for the registration
+        QtWidgets.QMessageBox.information(None, "Flarm Handler", 
+            "Registro actualizado correctamente.\n\nEl programa se ha configurado como administrador y las asociaciones se han restablecido.")
+        return 0
     
     return app.exec_()
 
