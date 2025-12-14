@@ -1,0 +1,10 @@
+# requirements.txt
+PyQt5==5.15.9
+defusedxml==0.7.1
+
+# Solo para Windows
+pywin32==306; sys_platform == 'win32'
+pypiwin32==223; sys_platform == 'win32'
+
+# Solo para Linux (opcional)
+pyxdg==0.28; sys_platform == 'linux'
