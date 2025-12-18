@@ -765,7 +765,7 @@ def register_scheme_macos(python_path: str, script_path: str) -> tuple[bool, str
         plist_lines.append('    <key>CFBundlePackageType</key><string>APPL</string>')
         plist_lines.append('    <key>CFBundleShortVersionString</key><string>1.0</string>')
         if os.path.exists(icon_src):
-             plist_lines.append('    <key>CFBundleIconFile</key><string>flarmpack.ico</string>')
+             plist_lines.append('    <key>CFBundleIconFile</key><string>app-icon.ico</string>')
         plist_lines.append('    <key>CFBundleURLTypes</key>')
         plist_lines.append('    <array>')
         plist_lines.append('        <dict>')
@@ -1475,7 +1475,7 @@ class InstallWindow(QtWidgets.QWidget):
             long_url = f"https://github.com/{self.owner}/{self.repo}"
         
         try:
-            r = requests.get(f"https://is.gd/create.php?format=simple&url={long_url}", timeout=5)
+            r = requests.get(f"https://is.gd/create.php?format=simple&url={long_url}", timeout=15)
             if r.ok:
                 short_url = r.text.strip()
             else:
