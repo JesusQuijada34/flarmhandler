@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Flarm Store handler (PyQt5 + Markdown + Custom Titlebar + Orange Theme)
+Fluthin Armadillo Store handler (PyQt5 + Markdown + Custom Titlebar + Orange Theme)
 """
 
 from __future__ import annotations
@@ -45,8 +45,8 @@ SPLASH_SETUP = "assets/splash_setup.png"
 
 GITHUB_RAW_TEMPLATE = "https://raw.githubusercontent.com/{owner}/{repo}/main/assets/splash.png"
 GITHUB_RELEASES_API = "https://api.github.com/repos/{owner}/{repo}/releases"
-SCHEME = "flarmstore"
-MIMETYPE = "application/x-flarmstore"
+SCHEME = "Fluthinstore"
+MIMETYPE = "application/x-Fluthinstore"
 
 # --- Global QSS (Orange Theme) ---
 GLOBAL_QSS = """
@@ -279,7 +279,7 @@ def check_platform_compatibility(target_platform: str) -> tuple[bool, str]:
             
     return True, ""
 
-def parse_flarm_url(url: str) -> tuple[str, str]:
+def parse_Fluthin_url(url: str) -> tuple[str, str]:
     if not url:
         raise ValueError("No URL provided")
     clean_url = url.replace(f"{SCHEME}://", "").replace(f"{SCHEME}:", "")
@@ -291,7 +291,7 @@ def parse_flarm_url(url: str) -> tuple[str, str]:
         repo = '.'.join(parts[1:])
         return repo, owner
     else:
-        raise ValueError(f"URL inválida: {url}. Debe ser flarmstore://username.repo")
+        raise ValueError(f"URL inválida: {url}. Debe ser Fluthinstore://username.repo")
 
 def platform_system_tag_for_asset() -> str:
     return platform_tag()
@@ -390,7 +390,7 @@ def create_documents_app_folder(publisher: str, app: str, version: str, platform
     else:
         documents = home / 'Documents'
     # New format: {publisher}-{app}-{version}-{platform}
-    base = documents / 'FLARM Apps' / f"{publisher}-{app}-{version}-{platformstr}"
+    base = documents / 'Fluthin Apps' / f"{publisher}-{app}-{version}-{platformstr}"
     base.mkdir(parents=True, exist_ok=True)
     return base
 
@@ -562,23 +562,23 @@ def check_registry_keys(python_path: str, script_path: str) -> tuple[bool, list[
 
     # 1. Check Protocol in HKCU or HKCR
     protocol_ok = check_key(winreg.HKEY_CURRENT_USER, rf"Software\Classes\{SCHEME}\shell\open\command", 
-                           expected_cmd_protocol, "Protocolo flarmstore (HKCU)")
+                           expected_cmd_protocol, "Protocolo Fluthinstore (HKCU)")
     if not protocol_ok:
         # Try HKCR as fallback
         protocol_ok = check_key(winreg.HKEY_CLASSES_ROOT, rf"{SCHEME}\shell\open\command", 
-                               expected_cmd_protocol, "Protocolo flarmstore (HKCR)")
+                               expected_cmd_protocol, "Protocolo Fluthinstore (HKCR)")
             
     # 2. Check .iflapp extension in HKCU or HKCR
     ext_ok = check_key(winreg.HKEY_CURRENT_USER, rf"Software\Classes\.iflapp", 
-                      "Flarm.Package", "Extensión .iflapp (HKCU)")
+                      "Fluthin.Package", "Extensión .iflapp (HKCU)")
     if not ext_ok:
         # Try HKCR as fallback
         ext_ok = check_key(winreg.HKEY_CLASSES_ROOT, rf".iflapp", 
-                          "Flarm.Package", "Extensión .iflapp (HKCR)")
+                          "Fluthin.Package", "Extensión .iflapp (HKCR)")
             
-    # 3. Check Icon for Flarm.Package (optional, don't fail if missing)
+    # 3. Check Icon for Fluthin.Package (optional, don't fail if missing)
     try:
-        key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Software\Classes\Flarm.Package\DefaultIcon")
+        key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Software\Classes\Fluthin.Package\DefaultIcon")
         val, _ = winreg.QueryValueEx(key, "")
         winreg.CloseKey(key)
         
@@ -594,9 +594,9 @@ def check_registry_keys(python_path: str, script_path: str) -> tuple[bool, list[
         # Icon is optional, don't fail
         pass
     
-    # 4. Check Flarm.Package command (with -l flag)
-    pkg_cmd_ok = check_key(winreg.HKEY_CURRENT_USER, r"Software\Classes\Flarm.Package\shell\open\command",
-                          expected_cmd_file, "Comando Flarm.Package")
+    # 4. Check Fluthin.Package command (with -l flag)
+    pkg_cmd_ok = check_key(winreg.HKEY_CURRENT_USER, r"Software\Classes\Fluthin.Package\shell\open\command",
+                          expected_cmd_file, "Comando Fluthin.Package")
             
     # Registry is valid if protocol and extension are OK
     # Icon and package command issues are warnings but not critical
@@ -605,7 +605,7 @@ def check_registry_keys(python_path: str, script_path: str) -> tuple[bool, list[
     return is_valid, issues
 
 def get_icon_path() -> str:
-    """Get the correct path to flarmpack.ico whether running as script or compiled."""
+    """Get the correct path to Fluthinpack.ico whether running as script or compiled."""
     if hasattr(sys, '_MEIPASS'):
         # Running as compiled executable (PyInstaller)
         base_path = Path(sys._MEIPASS)
@@ -613,9 +613,9 @@ def get_icon_path() -> str:
         # Running as script
         base_path = Path(__file__).parent
     
-    icon_path = base_path / "app" / "flarmpack.ico"
+    icon_path = base_path / "app" / "Fluthinpack.ico"
     
-    # Fallback to app-icon.ico if flarmpack.ico doesn't exist
+    # Fallback to app-icon.ico if Fluthinpack.ico doesn't exist
     if not icon_path.exists():
         icon_path = base_path / "app" / "app-icon.ico"
     
@@ -658,14 +658,14 @@ def register_scheme_windows(python_path: str, script_path: str) -> tuple[bool, s
         # Delete existing keys in HKCU
         delete_key_recursive(winreg.HKEY_CURRENT_USER, rf"Software\Classes\{SCHEME}")
         delete_key_recursive(winreg.HKEY_CURRENT_USER, r"Software\Classes\.iflapp")
-        delete_key_recursive(winreg.HKEY_CURRENT_USER, r"Software\Classes\Flarm.Package")
+        delete_key_recursive(winreg.HKEY_CURRENT_USER, r"Software\Classes\Fluthin.Package")
         
         # --- REGISTRATION: Create new keys ---
         
-        # 1. Register Protocol flarmstore://
+        # 1. Register Protocol Fluthinstore://
         key_path = rf"Software\Classes\{SCHEME}"
         key = winreg.CreateKey(winreg.HKEY_CURRENT_USER, key_path)
-        winreg.SetValueEx(key, None, 0, winreg.REG_SZ, "URL:Flarm Store Protocol")
+        winreg.SetValueEx(key, None, 0, winreg.REG_SZ, "URL:Fluthin Store Protocol")
         winreg.SetValueEx(key, "URL Protocol", 0, winreg.REG_SZ, "")
         
         # Icon for protocol
@@ -680,14 +680,14 @@ def register_scheme_windows(python_path: str, script_path: str) -> tuple[bool, s
         winreg.CloseKey(key)
         
         # 2. Register .iflapp extension
-        # .iflapp -> Flarm.Package
+        # .iflapp -> Fluthin.Package
         key_ext = winreg.CreateKey(winreg.HKEY_CURRENT_USER, r"Software\Classes\.iflapp")
-        winreg.SetValueEx(key_ext, None, 0, winreg.REG_SZ, "Flarm.Package")
+        winreg.SetValueEx(key_ext, None, 0, winreg.REG_SZ, "Fluthin.Package")
         winreg.CloseKey(key_ext)
         
-        # Flarm.Package -> Command with -l flag
-        key_progid = winreg.CreateKey(winreg.HKEY_CURRENT_USER, r"Software\Classes\Flarm.Package")
-        winreg.SetValueEx(key_progid, None, 0, winreg.REG_SZ, "Flarm Package")
+        # Fluthin.Package -> Command with -l flag
+        key_progid = winreg.CreateKey(winreg.HKEY_CURRENT_USER, r"Software\Classes\Fluthin.Package")
+        winreg.SetValueEx(key_progid, None, 0, winreg.REG_SZ, "Fluthin Package")
         
         if os.path.exists(icon_path):
             icon_key = winreg.CreateKey(key_progid, "DefaultIcon")
@@ -716,12 +716,12 @@ def register_scheme_linux(python_path: str, script_path: str) -> tuple[bool, str
     try:
         user_apps = Path.home() / ".local" / "share" / "applications"
         user_apps.mkdir(parents=True, exist_ok=True)
-        desktop_file = user_apps / f"flarmstore-handler.desktop"
+        desktop_file = user_apps / f"Fluthinstore-handler.desktop"
         exec_cmd = f"{python_path} {script_path} %u"
         
         icon_path = get_icon_path()
         
-        content = "[Desktop Entry]\nName=Flarmstore Handler\nExec=" + exec_cmd + "\nType=Application\nTerminal=false\nMimeType=x-scheme-handler/" + SCHEME + ";\n"
+        content = "[Desktop Entry]\nName=Fluthinstore Handler\nExec=" + exec_cmd + "\nType=Application\nTerminal=false\nMimeType=x-scheme-handler/" + SCHEME + ";\n"
         if os.path.exists(icon_path):
             content += f"Icon={icon_path}\n"
             
@@ -736,7 +736,7 @@ def register_scheme_macos(python_path: str, script_path: str) -> tuple[bool, str
     try:
         apps_dir = Path.home() / "Applications"
         apps_dir.mkdir(parents=True, exist_ok=True)
-        app_name = "FlarmHandler.app"
+        app_name = "FluthinHandler.app"
         app_dir = apps_dir / app_name
         contents = app_dir / "Contents"
         macos_dir = contents / "MacOS"
@@ -747,9 +747,9 @@ def register_scheme_macos(python_path: str, script_path: str) -> tuple[bool, str
         # Copy icon
         icon_src = get_icon_path()
         if os.path.exists(icon_src):
-            shutil.copy(icon_src, resources / "flarmpack.ico")
+            shutil.copy(icon_src, resources / "Fluthinpack.ico")
         
-        wrapper = macos_dir / "flarmhandler"
+        wrapper = macos_dir / "Fluthinhandler"
         wrapper_text = "#!/bin/bash\n\"" + python_path + "\" \"" + script_path + "\" \"$@\"\n"
         wrapper.write_text(wrapper_text, encoding='utf-8')
         wrapper.chmod(0o755)
@@ -759,9 +759,9 @@ def register_scheme_macos(python_path: str, script_path: str) -> tuple[bool, str
         plist_lines.append('<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">')
         plist_lines.append('<plist version="1.0">')
         plist_lines.append('<dict>')
-        plist_lines.append('    <key>CFBundleName</key><string>FlarmHandler</string>')
-        plist_lines.append('    <key>CFBundleIdentifier</key><string>com.flarm.handler</string>')
-        plist_lines.append('    <key>CFBundleExecutable</key><string>flarmhandler</string>')
+        plist_lines.append('    <key>CFBundleName</key><string>FluthinHandler</string>')
+        plist_lines.append('    <key>CFBundleIdentifier</key><string>com.Fluthin.handler</string>')
+        plist_lines.append('    <key>CFBundleExecutable</key><string>Fluthinhandler</string>')
         plist_lines.append('    <key>CFBundlePackageType</key><string>APPL</string>')
         plist_lines.append('    <key>CFBundleShortVersionString</key><string>1.0</string>')
         if os.path.exists(icon_src):
@@ -769,7 +769,7 @@ def register_scheme_macos(python_path: str, script_path: str) -> tuple[bool, str
         plist_lines.append('    <key>CFBundleURLTypes</key>')
         plist_lines.append('    <array>')
         plist_lines.append('        <dict>')
-        plist_lines.append('            <key>CFBundleURLName</key><string>Flarm Store</string>')
+        plist_lines.append('            <key>CFBundleURLName</key><string>Fluthin Store</string>')
         plist_lines.append('            <key>CFBundleURLSchemes</key>')
         plist_lines.append('            <array>')
         plist_lines.append('                <string>' + SCHEME + '</string>')
@@ -824,7 +824,7 @@ class CustomTitleBar(QtWidgets.QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
         
-        self.title_label = QtWidgets.QLabel("Flarm Installer")
+        self.title_label = QtWidgets.QLabel("Fluthin Installer")
         self.title_label.setObjectName("TitleLabel")
         layout.addWidget(self.title_label)
         
@@ -1052,12 +1052,12 @@ def find_installed_package(publisher: str, app: str, version: str, platform: str
     else:
         documents = home / 'Documents'
     
-    base_dir = documents / 'FLARM Apps'
+    base_dir = documents / 'Fluthin Apps'
     if not base_dir.exists():
         return None
     
     # Check for exact folder name: {publisher}-{app}-{version}-{platform}
-    folder_name = f"{publisher}-{app}-{version}-{platform}"
+    folder_name = f"{publisher}.{app}.{version}-{platform}"
     target_path = base_dir / folder_name
     
     if target_path.exists() and target_path.is_dir():
@@ -1065,14 +1065,14 @@ def find_installed_package(publisher: str, app: str, version: str, platform: str
     return None
 
 def find_installed_path(owner: str, repo: str) -> Path | None:
-    """Checks if the app is installed in Documents/FLARM Apps (legacy, loose match)."""
+    """Checks if the app is installed in Documents/Fluthin Apps (legacy, loose match)."""
     home = Path.home()
     if os.name == 'nt':
         documents = Path(os.path.join(os.environ.get('USERPROFILE',''), 'Documents'))
     else:
         documents = home / 'Documents'
     
-    base_dir = documents / 'FLARM Apps'
+    base_dir = documents / 'Fluthin Apps'
     if not base_dir.exists():
         return None
         
@@ -1277,7 +1277,7 @@ class InstallWindow(QtWidgets.QWidget):
     def load_local_package_metadata(self):
         """Extracts details.xml from the local package to populate metadata."""
         try:
-            self.temp_extract_dir = Path(tempfile.mkdtemp(prefix="flarm_meta_"))
+            self.temp_extract_dir = Path(tempfile.mkdtemp(prefix="Fluthin_meta_"))
             with zipfile.ZipFile(self.local_file_path, 'r') as z:
                 # Try to extract details.xml
                 if "details.xml" in z.namelist():
@@ -1635,7 +1635,7 @@ class InstallWorker(QtCore.QRunnable):
                      return
 
                 self.signals.log.emit("Extrayendo archivos...")
-                tmpdir = Path(tempfile.mkdtemp(prefix="flarm_iflapp_"))
+                tmpdir = Path(tempfile.mkdtemp(prefix="Fluthin_iflapp_"))
                 extract_dir = tmpdir / "extract"
                 extract_dir.mkdir(parents=True, exist_ok=True)
                 
@@ -1692,7 +1692,7 @@ class InstallWorker(QtCore.QRunnable):
 
             self.signals.log.emit(f"Descargando: {asset['name']} ({version})")
             
-            tmpdir = Path(tempfile.mkdtemp(prefix="flarm_dl_"))
+            tmpdir = Path(tempfile.mkdtemp(prefix="Fluthin_dl_"))
             downloaded = tmpdir / asset['name']
             
             try:
@@ -1746,7 +1746,7 @@ def restart_pc_delayed(seconds: int = 60):
     try:
         if platform.system().lower() == 'windows':
             subprocess.run(['shutdown', '/r', '/t', str(seconds), '/c', 
-                          f'Reiniciando en {seconds} segundos para aplicar cambios de registro de Flarm Handler...'], 
+                          f'Reiniciando en {seconds} segundos para aplicar cambios de registro de Fluthin Handler...'], 
                           check=False)
             return True
     except Exception:
@@ -1810,10 +1810,10 @@ def main(argv):
         
         # Check for explicit flags
         if arg1 == "-u" and len(argv) >= 3:
-            # URL flag: -u flarmstore://owner.repo
+            # URL flag: -u Fluthinstore://owner.repo
             url = argv[2].strip().strip('"').strip("'")
             try:
-                repo, owner = parse_flarm_url(url)
+                repo, owner = parse_Fluthin_url(url)
                 w = InstallWindow(repo, owner)
                 w.show()
             except Exception as e:
@@ -1845,10 +1845,10 @@ def main(argv):
                 if not w:
                     return 1
             
-            # Priority 3: Handle flarmstore:// protocol
+            # Priority 3: Handle Fluthinstore:// protocol
             elif arg.startswith(f"{SCHEME}:") or arg.startswith(f"{SCHEME}://"):
                 try:
-                    repo, owner = parse_flarm_url(arg)
+                    repo, owner = parse_Fluthin_url(arg)
                     w = InstallWindow(repo, owner)
                     w.show()
                 except Exception as e:
@@ -1856,11 +1856,11 @@ def main(argv):
                     return 1
             else:
                 # Unknown argument, show manual input
-                text, ok = QtWidgets.QInputDialog.getText(None, "Flarm Handler", 
-                    f"Argumento no reconocido: {arg}\n\nIntroduce una URL de Flarm (flarmstore://owner.repo):")
+                text, ok = QtWidgets.QInputDialog.getText(None, "Fluthin Handler", 
+                    f"Argumento no reconocido: {arg}\n\nIntroduce una URL de Fluthin (Fluthinstore://owner.repo):")
                 if ok and text:
                     try:
-                        repo, owner = parse_flarm_url(text)
+                        repo, owner = parse_Fluthin_url(text)
                         w = InstallWindow(repo, owner)
                         w.show()
                     except Exception as e:
@@ -1870,7 +1870,7 @@ def main(argv):
                     return 0
     else:
         # No arguments - Just show a success message for the registration
-        QtWidgets.QMessageBox.information(None, "Flarm Handler", 
+        QtWidgets.QMessageBox.information(None, "Fluthin Handler", 
             "Registro actualizado correctamente.\n\nEl programa se ha configurado como administrador y las asociaciones se han restablecido.")
         return 0
     
