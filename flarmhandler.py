@@ -280,9 +280,15 @@ def check_platform_compatibility(target_platform: str) -> tuple[bool, str]:
     return True, ""
 
 def parse_Fluthin_url(url: str) -> tuple[str, str]:
-    if not url:
+    if not isinstance(url, str) or not url.strip():
         raise ValueError("No URL provided")
-    clean_url = url.replace(f"{SCHEME}://", "").replace(f"{SCHEME}:", "")
+    clean_url = url.strip()
+    accepted_schemes = ("fluthinstore://", "flarmstore://", "fluthinstore:", "flarmstore:")
+    lower_url = clean_url.lower()
+    for scheme in accepted_schemes:
+        if lower_url.startswith(scheme):
+            clean_url = clean_url[len(scheme):]
+            break
     if clean_url.endswith('/'):
         clean_url = clean_url[:-1]
     parts = clean_url.split('.')
@@ -346,20 +352,36 @@ def download_file(url: str, dest_path: str, progress_callback=None) -> str:
                         progress_callback(int(dl * 100 / total_length))
     return dest_path
 
+def _safe_extract_member(base: Path, member_name: str) -> Path:
+    """Return a safe extraction target or raise for path traversal."""
+    target = (base / member_name).resolve()
+    if target != base and base not in target.parents:
+        raise ValueError(f"Ruta insegura en paquete: {member_name}")
+    return target
+
+
 def extract_archive(file_path: str, extract_to: str) -> bool:
     file_path = str(file_path)
+    base = Path(extract_to).resolve()
+    base.mkdir(parents=True, exist_ok=True)
     if zipfile.is_zipfile(file_path):
         with zipfile.ZipFile(file_path, 'r') as z:
-            z.extractall(extract_to)
+            for member in z.infolist():
+                _safe_extract_member(base, member.filename)
+            z.extractall(base)
         return True
     try:
         if tarfile.is_tarfile(file_path):
-            with tarfile.open(file_path, 'r:*') as t:
-                t.extractall(extract_to)
+            with tarfile.open(file_path, 'r:*') as archive:
+                for member in archive.getmembers():
+                    _safe_extract_member(base, member.name)
+                    if member.issym() or member.islnk():
+                        raise ValueError(f"Enlace inseguro en paquete: {member.name}")
+                archive.extractall(base)
             return True
-    except Exception:
-        pass
-    dest = Path(extract_to) / Path(file_path).name
+    except (tarfile.TarError, ValueError):
+        return False
+    dest = base / Path(file_path).name
     shutil.copy(file_path, str(dest))
     return False
 
