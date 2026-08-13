@@ -3,11 +3,11 @@
   <publisher>Influent</publisher>
   <app>flarmhandler</app>
   <name>Fluthin Armadillo Handler (FlArm Handler)</name>
-  <version>v1.0-26.08-23.43-AlphaCube</version>
-  <correlationid>384cfdd61ee89865982ce280da505cc20428600c10cfe6bf8a84786e2fb2b4e9</correlationid>
+  <version>v1.0-26.08-21.19-AlphaCube</version>
+  <correlationid>abd78905814c6ec491608f0fe70841c6d3fa38eeb1874d1bc12831ada24c4f42</correlationid>
   <rate>Todas las edades</rate>
   <author>JesusQuijada34</author>
   <platform>AlphaCube</platform>
-  <description>Instalador multiplataforma de paquetes Fluthin con protocolo de enlaces</description>
+  <description>Estructura reparada por MoonFix</description>
   <year>2026</year>
 </app>
