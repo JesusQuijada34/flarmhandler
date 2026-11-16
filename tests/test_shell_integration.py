@@ -41,6 +41,19 @@ def _png_bytes() -> bytes:
     return b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", ihdr) + chunk(b"IDAT", zlib.compress(raw)) + chunk(b"IEND", b"")
 
 
+def _png_transparent(width: int = 2, height: int = 2) -> bytes:
+    """PNG RGBA completamente transparente, para probar el fondo de acento."""
+
+    def chunk(tag: bytes, data: bytes) -> bytes:
+        body = tag + data
+        return struct.pack(">I", len(data)) + body + struct.pack(">I", zlib.crc32(body) & 0xFFFFFFFF)
+
+    ihdr = struct.pack(">IIBBBBB", width, height, 8, 6, 0, 0, 0)
+    row = b"\x00" + bytes((0, 0, 0, 0)) * width
+    raw = row * height
+    return b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", ihdr) + chunk(b"IDAT", zlib.compress(raw)) + chunk(b"IEND", b"")
+
+
 @pytest.fixture()
 def sample_project(tmp_path: Path) -> Path:
     project = tmp_path / "pkg"
@@ -178,6 +191,96 @@ def test_ensure_executable_bits_marks_binaries(tmp_path: Path):
     flarmhandler.ensure_executable_bits(tmp_path)
     if os.name != "nt":
         assert os.access(binary, os.X_OK)
+
+
+def test_normalize_install_permissions_fixes_restrictive_modes(tmp_path: Path):
+    if os.name == "nt":
+        pytest.skip("los modos POSIX no aplican en Windows")
+    (tmp_path / "app").mkdir()
+    script = tmp_path / "app" / "demo"
+    script.write_text("#!/bin/sh\n", encoding="utf-8")
+    script.chmod(0o000)
+    data = tmp_path / "app" / "data.json"
+    data.write_text("{}\n", encoding="utf-8")
+    data.chmod(0o000)
+
+    fixed = flarmhandler.normalize_install_permissions(tmp_path)
+    assert fixed >= 2
+    # Los ficheros quedan legibles y escribibles por el propietario.
+    assert os.access(data, os.R_OK) and os.access(data, os.W_OK)
+    assert (data.stat().st_mode & 0o777) == 0o644
+    # El bit de ejecución se conserva si ya estaba presente.
+    script.chmod(0o755)
+    flarmhandler.normalize_install_permissions(tmp_path)
+    assert (script.stat().st_mode & 0o111) == 0o111
+
+
+# --- Acento del sistema y geometría UWP ------------------------------------------
+
+
+def _ensure_app():
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    from PyQt6 import QtWidgets
+
+    app = QtWidgets.QApplication.instance()
+    if app is None:
+        app = QtWidgets.QApplication([])
+    # Conservar referencia: si la QApplication se recolecta, Qt aborta el proceso.
+    globals()["_QT_APP_REF"] = app
+    return app
+
+
+def test_system_accent_color_is_hex():
+    accent = flarmhandler.system_accent_color()
+    assert accent.startswith("#")
+    assert len(accent) == 7
+    int(accent[1:], 16)
+
+
+def test_shade_and_tint_color():
+    assert flarmhandler.shade_color("#0078D4", 0.90) == "#006CBE"
+    assert flarmhandler.tint_color("#0078D4", 1.0) == "#FFFFFF"
+    assert flarmhandler.tint_color("#0078D4", 0.0) == "#0078D4"
+    # Entradas inválidas se devuelven sin cambios en vez de lanzar.
+    assert flarmhandler.shade_color("no-es-color", 0.5) == "no-es-color"
+
+
+def test_build_global_qss_injects_accent_without_leftover_placeholders():
+    qss = flarmhandler.build_global_qss("#0078D4")
+    assert "{accent" not in qss
+    assert "#0078D4" in qss
+    # La geometría UWP pide esquinas suaves y un panel de estado con acento.
+    assert "#StatusPanel" in qss
+    assert "border-radius: 4px" in qss
+    assert "QPushButton#PrimaryBtn" in qss
+    assert "QPushButton#DangerBtn" in qss
+
+
+def test_render_app_icon_paints_accent_background():
+    _ensure_app()
+    transparent = _png_transparent(2, 2)
+    pix = flarmhandler.render_app_icon(transparent, size=96, accent="#0078D4")
+    assert pix is not None and pix.width() == 96 and pix.height() == 96
+    # Con un icono transparente el fondo del cuadrado muestra el acento del SO.
+    assert pix.toImage().pixelColor(2, 2).name() == "#0078d4"
+    assert flarmhandler.render_app_icon(b"", size=96) is None
+    assert flarmhandler.render_app_icon(b"no-es-imagen", size=96) is None
+
+
+def test_install_window_header_uses_uwp_copy():
+    _ensure_app()
+    window = flarmhandler.InstallWindow(repo="suprr", owner="influent")
+    try:
+        assert window.title_lbl.text() == "¿Instalar suprr?"
+        assert window.meta_lbl.text().startswith("Editor: influent")
+        assert "Versión:" in window.ver_lbl.text()
+        assert window.icon_label.width() == 96
+        # Sin icono válido se muestran las iniciales sobre el color de acento.
+        assert window.icon_label.text() == "S"
+        assert window.accent in window.progress.styleSheet()
+    finally:
+        window.deleteLater()
+
 
 
 # --- Integración de shell (freedesktop) ------------------------------------------

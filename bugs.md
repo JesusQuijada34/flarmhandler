@@ -49,9 +49,9 @@ El nuevo instalador debe replicar fielmente la arquitectura visual y funcional d
 ## 3. Lista de Tareas Técnicas (Backlog de Ejecución)
 
 ### Fase 1: Corrección de Bugs Críticos del Instalador (`flarmhandler`)
-- [ ] **Permisos de Descompresión:** Corregir el motor de extracción/instalación para que no aplique permisos restrictivos en disco. Garantizar permisos estándar de lectura y escritura (`chmod` / ACLs de Windows) de forma automática tras descomprimir.
-- [ ] **Detección de Plataforma y Assets:** Corregir el parser de metadatos para que identifique la arquitectura/plataforma real del paquete (eliminando el hardcoding erróneo a `AlphaCube`), cargue correctamente los iconos y cree los accesos directos en el sistema.
-- [ ] **Actualización de Hojas de Estilo (QSS):** Actualizar los archivos `.qss` tanto en `packagemaker` como en `flarmhandler` para implementar la geometría UWP, controles dinámicos con el color de acento del SO y estados de botones (activo, hover, deshabilitado).
+- [x] **Permisos de Descompresión:** Corregir el motor de extracción/instalación para que no aplique permisos restrictivos en disco. Garantizar permisos estándar de lectura y escritura (`chmod` / ACLs de Windows) de forma automática tras descomprimir.
+- [x] **Detección de Plataforma y Assets:** Corregir el parser de metadatos para que identifique la arquitectura/plataforma real del paquete (eliminando el hardcoding erróneo a `AlphaCube`), cargue correctamente los iconos y cree los accesos directos en el sistema.
+- [x] **Actualización de Hojas de Estilo (QSS):** Actualizar los archivos `.qss` tanto en `packagemaker` como en `flarmhandler` para implementar la geometría UWP, controles dinámicos con el color de acento del SO y estados de botones (activo, hover, deshabilitado).
 
 ### Fase 2: Fondos Dinámicos, Mica y Arquitectura de Splashes
 - [ ] **Banner Borroso y Efecto Mica:**

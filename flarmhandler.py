@@ -7,8 +7,11 @@ Fluthin Armadillo Store handler (PyQt5 + Markdown + Custom Titlebar + Orange The
 from __future__ import annotations
 import sys, os, platform, tempfile, shutil, zipfile, tarfile, re, json, webbrowser, subprocess, time, ctypes
 from pathlib import Path
-from urllib.parse import urlparse
 from PyQt6 import QtWidgets, QtGui, QtCore, QtSvg
+
+# ``QtSvg`` se importa por su efecto lateral: registra el plugin de imagen SVG
+# en QtGui, aunque el módulo no lo use de forma directa.
+_SVG_PLUGIN = QtSvg
 
 # ``requests`` sólo se usa en el modo online (GitHub). Las acciones de shell y
 # la lectura de cabecera deben funcionar sin él, así que su ausencia no impide
@@ -61,11 +64,13 @@ try:
 except Exception:
     winreg = None
 try:
-    import pythoncom
+    import pythoncom  # noqa: F401  (sonda de disponibilidad de pywin32)
     import win32com.client  # type: ignore
     HAS_PYWIN32 = True
+    _PYWIN32_PROBE = pythoncom
 except Exception:
     HAS_PYWIN32 = False
+    _PYWIN32_PROBE = None
 
 DEFAULT_SPLASH = "assets/splash.png"
 DEFAULT_ICON = "assets/product_logo.png"
@@ -76,133 +81,243 @@ GITHUB_RELEASES_API = "https://api.github.com/repos/{owner}/{repo}/releases"
 SCHEME = "Fluthinstore"
 MIMETYPE = "application/x-Fluthinstore"
 
-# --- Global QSS (Orange Theme) ---
+# --- Color de acento del sistema operativo ---
+# El instalador debe teñirse con el acento del SO (estilo Windows App Installer).
+# Si no se puede determinar se usa el azul de Windows 11, de modo que la
+# interfaz nunca quede sin acento.
+DEFAULT_ACCENT = "#0078D4"
+_GNOME_ACCENTS = {
+    "blue": "#3584E4", "teal": "#2190A4", "green": "#3A944A",
+    "yellow": "#C88800", "orange": "#ED5B00", "red": "#E62D42",
+    "pink": "#D56199", "purple": "#9141AC", "slate": "#6F8396",
+}
+
+
+def system_accent_color() -> str:
+    """Devuelve el color de acento del SO como ``#RRGGBB``.
+
+    Windows: lee ``AccentColor`` de DWM (DWORD en orden ABGR). Linux: consulta
+    ``gsettings`` de GNOME. Cualquier fallo cae al azul por defecto.
+    """
+    if platform.system().lower().startswith("win") and winreg is not None:
+        try:
+            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Software\Microsoft\Windows\DWM") as key:
+                value, _ = winreg.QueryValueEx(key, "AccentColor")
+            blue, green, red = value & 0xFF, (value >> 8) & 0xFF, (value >> 16) & 0xFF
+            return f"#{red:02X}{green:02X}{blue:02X}"
+        except OSError:
+            pass
+    else:
+        try:
+            result = subprocess.run(
+                ["gsettings", "get", "org.gnome.desktop.interface", "accent-color"],
+                capture_output=True, text=True, timeout=2,
+            )
+            if result.returncode == 0:
+                name = result.stdout.strip().strip("'").lower()
+                if name in _GNOME_ACCENTS:
+                    return _GNOME_ACCENTS[name]
+        except (OSError, subprocess.SubprocessError):
+            pass
+    return DEFAULT_ACCENT
+
+
+def shade_color(color: str, factor: float) -> str:
+    """Aclara (``factor > 1``) u oscurece (``factor < 1``) un ``#RRGGBB``."""
+    try:
+        red = int(color[1:3], 16)
+        green = int(color[3:5], 16)
+        blue = int(color[5:7], 16)
+    except (ValueError, IndexError):
+        return color
+    clamp = lambda v: max(0, min(255, int(v * factor)))
+    return f"#{clamp(red):02X}{clamp(green):02X}{clamp(blue):02X}"
+
+
+def tint_color(color: str, amount: float) -> str:
+    """Mezcla ``color`` hacia blanco en la proporción ``amount`` (0..1).
+
+    Se usa para los fondos tenues del acento (p. ej. hover del botón
+    secundario); multiplicar los canales saturaba a cian/blanco puro.
+    """
+    try:
+        red = int(color[1:3], 16)
+        green = int(color[3:5], 16)
+        blue = int(color[5:7], 16)
+    except (ValueError, IndexError):
+        return color
+    amount = max(0.0, min(1.0, amount))
+    blend = lambda channel: int(channel + (255 - channel) * amount)
+    return f"#{blend(red):02X}{blend(green):02X}{blend(blue):02X}"
+
+
+def render_app_icon(data: bytes, size: int = 96, accent: str = DEFAULT_ACCENT) -> "QtGui.QPixmap | None":
+    """Pixmap cuadrado del icono, rellenando el fondo con el acento si es transparente.
+
+    El icono del paquete suele venir con fondo transparente; el instalador UWP
+    lo coloca sobre un cuadrado del color de acento del SO. Devuelve ``None`` si
+    los bytes no son una imagen válida.
+    """
+    source = QtGui.QPixmap()
+    if not data or not source.loadFromData(data):
+        return None
+    canvas = QtGui.QPixmap(size, size)
+    canvas.fill(QtCore.Qt.GlobalColor.transparent)
+    painter = QtGui.QPainter(canvas)
+    painter.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing)
+    painter.setRenderHint(QtGui.QPainter.RenderHint.SmoothPixmapTransform)
+    # Fondo de acento con esquinas suavemente redondeadas (geometría UWP).
+    painter.setPen(QtCore.Qt.PenStyle.NoPen)
+    painter.setBrush(QtGui.QColor(accent))
+    painter.drawRoundedRect(0, 0, size, size, 6, 6)
+    scaled = source.scaled(
+        size, size,
+        QtCore.Qt.AspectRatioMode.KeepAspectRatio,
+        QtCore.Qt.TransformationMode.SmoothTransformation,
+    )
+    painter.drawPixmap(
+        (size - scaled.width()) // 2,
+        (size - scaled.height()) // 2,
+        scaled,
+    )
+    painter.end()
+    return canvas
+
+# --- Global QSS (UWP theme; el acento lo inyecta build_global_qss) ---
+# --- Hoja de estilos global (UWP). El acento del SO se inyecta con f-string. ---
 GLOBAL_QSS = """
 /* Global Reset */
 * {
     outline: none;
 }
 QWidget {
-    background: #ffffff;
-    font-family: "Roboto", "Segoe UI", "Helvetica Neue", Helvetica, Arial, sans-serif;
-    color: #202124;
+    background: #FFFFFF;
+    font-family: "Segoe UI", "Roboto", "Helvetica Neue", Helvetica, Arial, sans-serif;
+    color: #1B1B1B;
     font-size: 14px;
 }
 
-/* MessageBox Styling - Fix white text on white background */
+/* MessageBox */
 QMessageBox {
-    background-color: #ffffff;
+    background-color: #FFFFFF;
 }
 QMessageBox QLabel {
-    color: #202124;
+    color: #1B1B1B;
     background-color: transparent;
 }
 QMessageBox QPushButton {
-    background-color: #ffffff;
-    color: #ff6d00;
-    border: 1px solid #dadce0;
+    background-color: #F3F3F3;
+    color: #1B1B1B;
+    border: 1px solid #D6D6D6;
     border-radius: 4px;
-    padding: 8px 24px;
-    min-width: 80px;
+    padding: 7px 22px;
+    min-width: 88px;
 }
 QMessageBox QPushButton:hover {
-    background-color: #fff3e0;
-    border-color: #ffb74d;
+    background-color: #E9E9E9;
 }
 QMessageBox QPushButton:pressed {
-    background-color: #ffe0b2;
+    background-color: #DEDEDE;
 }
 QMessageBox QPushButton:default {
-    background-color: #ff6d00;
-    color: #ffffff;
+    background-color: {accent};
+    color: #FFFFFF;
     border: none;
 }
 QMessageBox QPushButton:default:hover {
-    background-color: #f57c00;
+    background-color: {accent_hover};
 }
 
 /* Scrollbars */
 QScrollBar:vertical {
     border: none;
-    background: #f1f3f4;
+    background: #F3F3F3;
     width: 10px;
     margin: 0px;
 }
 QScrollBar::handle:vertical {
-    background: #dadce0;
+    background: #C9C9C9;
     min-height: 20px;
     border-radius: 5px;
 }
 QScrollBar::handle:vertical:hover {
-    background: #bdc1c6;
+    background: #ADADAD;
 }
 QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
     height: 0px;
 }
 
-/* Buttons */
+/* Botones (geometría UWP: esquinas 4px, sin mayúsculas forzadas) */
 QPushButton {
-    background-color: #ffffff;
-    color: #ff6d00;
-    border: 1px solid #dadce0;
+    background-color: #F3F3F3;
+    color: #1B1B1B;
+    border: 1px solid #D6D6D6;
     border-radius: 4px;
-    padding: 8px 24px;
+    padding: 7px 22px;
     font-weight: 500;
-    text-transform: uppercase;
-    letter-spacing: 0.5px;
 }
 QPushButton:hover {
-    background-color: #fff3e0;
-    border-color: #ffb74d;
+    background-color: #E9E9E9;
 }
 QPushButton:pressed {
-    background-color: #ffe0b2;
+    background-color: #DEDEDE;
 }
 QPushButton:disabled {
-    color: #bdc1c6;
-    border-color: #f1f3f4;
+    color: #9A9A9A;
+    background-color: #F7F7F7;
+    border-color: #E6E6E6;
 }
 
-/* Primary Button (Install) */
+/* Botón primario (Instalar / Ejecutar) */
 QPushButton#PrimaryBtn {
-    background-color: #ff6d00;
-    color: #ffffff;
+    background-color: {accent};
+    color: #FFFFFF;
     border: none;
 }
 QPushButton#PrimaryBtn:hover {
-    background-color: #f57c00;
+    background-color: {accent_hover};
 }
 QPushButton#PrimaryBtn:pressed {
-    background-color: #ef6c00;
+    background-color: {accent_pressed};
 }
 QPushButton#PrimaryBtn:disabled {
-    background-color: #e8eaed;
-    color: #9aa0a6;
+    background-color: #E8E8E8;
+    color: #9A9A9A;
 }
 
-/* Inputs */
+/* Botón secundario (Compartir) */
+QPushButton#SecondaryBtn {
+    background-color: transparent;
+    color: {accent};
+    border: 1px solid #D6D6D6;
+}
+QPushButton#SecondaryBtn:hover {
+    background-color: {accent_soft};
+}
+
+/* Entradas */
 QLineEdit, QTextEdit {
-    background: #ffffff;
-    border: 1px solid #dadce0;
+    background: #FFFFFF;
+    border: 1px solid #D6D6D6;
     border-radius: 4px;
     padding: 8px;
-    selection-background-color: #ffe0b2;
-    selection-color: #202124;
+    selection-background-color: {accent};
+    selection-color: #FFFFFF;
 }
 QLineEdit:focus, QTextEdit:focus {
-    border: 2px solid #ff6d00;
+    border: 2px solid {accent};
     padding: 7px;
 }
 
-/* Custom Title Bar */
+/* Barra de título personalizada */
 #TitleBar {
-    background-color: #ffffff;
+    background-color: #F3F3F3;
     min-height: 32px;
 }
 #TitleLabel {
-    color: #5f6368;
+    color: #5F5F5F;
     font-size: 12px;
-    padding-left: 10px;
+    padding-left: 12px;
 }
 #TitleBtn {
     background: transparent;
@@ -215,43 +330,97 @@ QLineEdit:focus, QTextEdit:focus {
     max-height: 32px;
 }
 #TitleBtn:hover {
-    background-color: #e8eaed;
+    background-color: #E5E5E5;
 }
 #TitleBtn#close:hover {
-    background-color: #e81123;
+    background-color: #E81123;
     color: white;
 }
 
-/* Header Area */
+/* Cabecera (icono + metadatos + acciones) */
 #HeaderArea {
-    background-color: #ffffff;
-    border-bottom: 1px solid #dadce0;
+    background-color: #FFFFFF;
+    border-bottom: 1px solid #E6E6E6;
 }
 #AppTitle {
     font-size: 24px;
-    font-weight: 500;
-    color: #202124;
+    font-weight: 600;
+    color: #1B1B1B;
 }
 #AppMeta {
-    color: #ff6d00;
+    color: #5F5F5F;
     font-weight: 500;
     font-size: 14px;
 }
 #AppVersion {
-    color: #5f6368;
+    color: #8A8A8A;
     font-size: 12px;
 }
 
-/* Logs */
+/* Contenedor del icono: cuadrado con el color de acento del SO */
+#AppIcon {
+    background-color: {accent};
+    border-radius: 6px;
+}
+
+/* Panel de estado: borde resaltado con el acento del SO (estilo UWP) */
+#StatusPanel {
+    background-color: #FBFBFB;
+    border: 2px solid {accent};
+    border-radius: 6px;
+}
+
+/* Pie con las acciones y el icono informativo */
+#FooterArea {
+    background-color: #FFFFFF;
+    border-top: 1px solid #E6E6E6;
+}
+#InfoBadge {
+    background-color: transparent;
+    color: #5F5F5F;
+    border: 1px solid #C9C9C9;
+    border-radius: 11px;
+    font-size: 12px;
+    font-weight: 700;
+}
+QPushButton#DangerBtn {
+    background-color: transparent;
+    color: #C42B1C;
+    border: 1px solid #E7B7B2;
+}
+QPushButton#DangerBtn:hover {
+    background-color: #FDF3F2;
+}
+
+/* Registro de instalación */
 #LogArea {
-    background-color: #202124;
-    color: #e8eaed;
-    font-family: "Consolas", monospace;
+    background-color: #1F1F1F;
+    color: #E8E8E8;
+    font-family: "Cascadia Mono", "Consolas", monospace;
     font-size: 12px;
     border: none;
     border-radius: 4px;
 }
 """
+
+
+def build_global_qss(accent: str | None = None) -> str:
+    """Devuelve la hoja global con el acento del SO inyectado en los placeholders.
+
+    Se usa ``str.replace`` en vez de ``str.format`` porque la hoja contiene
+    llaves CSS (``{ ... }``) que ``format`` interpretaría como campos.
+    """
+    accent = accent or system_accent_color()
+    replacements = {
+        "{accent}": accent,
+        "{accent_hover}": shade_color(accent, 0.90),
+        "{accent_pressed}": shade_color(accent, 0.78),
+        "{accent_soft}": tint_color(accent, 0.88),
+    }
+    qss = GLOBAL_QSS
+    for token, value in replacements.items():
+        qss = qss.replace(token, value)
+    return qss
 
 def is_admin():
     try:
@@ -620,6 +789,45 @@ def ensure_executable_bits(root_dir: Path) -> list[str]:
                     pass
     return marked
 
+
+def normalize_install_permissions(root_dir: Path) -> int:
+    """Normaliza los permisos del árbol instalado a valores funcionales.
+
+    Un ZIP o TAR puede traer entradas con modo restrictivo (``000``) o sin
+    permiso de escritura para el propietario, y entonces la app instalada no
+    puede leer sus propios recursos. Se dejan los directorios en ``0o755`` y
+    los ficheros en ``0o644``, conservando el bit de ejecución ya presente.
+    En Windows se limpia el atributo de sólo lectura. Devuelve cuántas entradas
+    se corrigieron.
+    """
+    root = Path(root_dir)
+    if not root.is_dir():
+        return 0
+
+    if os.name == 'nt':
+        fixed = 0
+        for path in root.rglob('*'):
+            try:
+                if path.is_file() and not os.access(path, os.W_OK):
+                    os.chmod(path, 0o666)
+                    fixed += 1
+            except OSError:
+                pass
+        return fixed
+
+    fixed = 0
+    for path in root.rglob('*'):
+        try:
+            mode = path.stat().st_mode
+            executable = mode & 0o111
+            wanted = 0o755 if path.is_dir() else (0o644 | executable)
+            if (mode & 0o777) != wanted:
+                path.chmod(wanted)
+                fixed += 1
+        except OSError:
+            pass
+    return fixed
+
 def create_shortcut(desktop_path: Path, target: Path, name: str, args: str = "") -> str:
     desktop_path.mkdir(parents=True, exist_ok=True)
     system = platform.system().lower()
@@ -635,7 +843,7 @@ def create_shortcut(desktop_path: Path, target: Path, name: str, args: str = "")
                 lnk.IconLocation = str(target)
                 lnk.save()
                 return shortcut_path
-            except Exception as e:
+            except Exception:
                 pass
         url_path = desktop_path / (name + '.url')
         content = "[InternetShortcut]\nURL=file:///" + str(target).replace('\\', '/') + "\n"
@@ -781,11 +989,11 @@ def check_registry_keys(python_path: str, script_path: str) -> tuple[bool, list[
                                expected_cmd_protocol, "Protocolo Fluthinstore (HKCR)")
             
     # 2. Check .iflapp extension in HKCU or HKCR
-    ext_ok = check_key(winreg.HKEY_CURRENT_USER, rf"Software\Classes\.iflapp", 
+    ext_ok = check_key(winreg.HKEY_CURRENT_USER, r"Software\Classes\.iflapp", 
                       "Fluthin.Package", "Extensión .iflapp (HKCU)")
     if not ext_ok:
         # Try HKCR as fallback
-        ext_ok = check_key(winreg.HKEY_CLASSES_ROOT, rf".iflapp", 
+        ext_ok = check_key(winreg.HKEY_CLASSES_ROOT, r".iflapp", 
                           "Fluthin.Package", "Extensión .iflapp (HKCR)")
             
     # 3. Check Icon for Fluthin.Package (optional, don't fail if missing)
@@ -1010,7 +1218,7 @@ def register_scheme_linux(python_path: str, script_path: str) -> tuple[bool, str
     try:
         user_apps = Path.home() / ".local" / "share" / "applications"
         user_apps.mkdir(parents=True, exist_ok=True)
-        desktop_file = user_apps / f"Fluthinstore-handler.desktop"
+        desktop_file = user_apps / "Fluthinstore-handler.desktop"
         exec_cmd = f"{python_path} {script_path} %u"
         
         icon_path = get_icon_path()
@@ -1151,17 +1359,19 @@ class CustomTitleBar(QtWidgets.QWidget):
 
     def create_btn(self, name):
         btn = QtWidgets.QPushButton()
-        btn.setObjectName(f"TitleBtn")
+        btn.setObjectName("TitleBtn")
         btn.setProperty("class", name)
         if name == "close":
             btn.setObjectName("TitleBtn")
             btn.setProperty("id", "close")
         
-        # Create icon
+        # Create icon. El QPixmap se rellena con transparencia *antes* de pintar:
+        # sin ese ``fill`` los píxeles quedan sin inicializar y el antialiasing
+        # del trazo dejaba el ruido gráfico que se veía sobre los botones.
         pixmap = QtGui.QPixmap(46, 32)
-        #pixmap.fill(QtCore.Qt.transparent)
+        pixmap.fill(QtCore.Qt.GlobalColor.transparent)
         painter = QtGui.QPainter(pixmap)
-        #painter.setRenderHint(QtGui.QPainter.Antialiasing)
+        painter.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing)
         
         pen = QtGui.QPen(QtGui.QColor("#202124"))
         pen.setWidthF(1.2)
@@ -1238,10 +1448,18 @@ class BlurredBanner(QtWidgets.QWidget):
         self.bg_label.setScaledContents(True)
         
         self.fg_label = QtWidgets.QLabel(self)
-        #self.fg_label.setAlignment(QtCore.Qt.AlignCenter)
-        
+        self.fg_label.setAlignment(QtCore.Qt.AlignmentFlag.AlignHCenter | QtCore.Qt.AlignmentFlag.AlignTop)
+        # Oculto hasta que haya un splash real: un banner vacío de 220 px dejaba
+        # el hueco blanco desproporcionado que mostraba la interfaz defectuosa.
+        self.setVisible(False)
+
     def setPixmap(self, pixmap):
+        if pixmap is None or pixmap.isNull():
+            self._original_pixmap = None
+            self.setVisible(False)
+            return
         self._original_pixmap = pixmap
+        self.setVisible(True)
         self.update_images()
 
     def resizeEvent(self, event):
@@ -1266,7 +1484,11 @@ class BlurredBanner(QtWidgets.QWidget):
         scale_factor = w / img_w
         new_h = int(img_h * scale_factor)
         
-##        scaled_pix = self._original_pixmap.scaled(w, new_h, QtCore.Qt.KeepAspectRatio, QtCore.Qt.SmoothTransformation)
+        scaled_pix = self._original_pixmap.scaled(
+            w, new_h,
+            QtCore.Qt.AspectRatioMode.KeepAspectRatio,
+            QtCore.Qt.TransformationMode.SmoothTransformation,
+        )
         
         if new_h >= h:
             # Case A: Image is taller than widget (or equal).
@@ -1286,15 +1508,27 @@ class BlurredBanner(QtWidgets.QWidget):
             # We center it vertically and fill background with blur.
             
             # 1. Background: Zoomed blur to fill
-##            cover_pix = self._original_pixmap.scaled(w, h, QtCore.Qt.KeepAspectRatioByExpanding, QtCore.Qt.SmoothTransformation)
+            cover_pix = self._original_pixmap.scaled(
+                w, h,
+                QtCore.Qt.AspectRatioMode.KeepAspectRatioByExpanding,
+                QtCore.Qt.TransformationMode.SmoothTransformation,
+            )
             # Crop center of cover
             cx = (cover_pix.width() - w) // 2
             cy = (cover_pix.height() - h) // 2
             bg_cropped = cover_pix.copy(cx, cy, w, h)
             
             # Blur
-            small = bg_cropped.scaled(20, 20, QtCore.Qt.IgnoreAspectRatio, QtCore.Qt.SmoothTransformation)
-            blurred = small.scaled(w, h, QtCore.Qt.IgnoreAspectRatio, QtCore.Qt.SmoothTransformation)
+            small = bg_cropped.scaled(
+                20, 20,
+                QtCore.Qt.AspectRatioMode.IgnoreAspectRatio,
+                QtCore.Qt.TransformationMode.SmoothTransformation,
+            )
+            blurred = small.scaled(
+                w, h,
+                QtCore.Qt.AspectRatioMode.IgnoreAspectRatio,
+                QtCore.Qt.TransformationMode.SmoothTransformation,
+            )
             
             self.bg_label.setPixmap(blurred)
             self.bg_label.setGeometry(0, 0, w, h)
@@ -1394,6 +1628,7 @@ class InstallWindow(QtWidgets.QWidget):
         self.local_file_path = local_file_path
         self.shortname = repo
         self.app_name = repo # Default fallback
+        self.accent = system_accent_color()  # Acento del SO para icono y estados
         self.temp_extract_dir = None # To clean up later if needed
         self.package_icon = b"" # Icono leído de la cabecera del paquete
         
@@ -1434,65 +1669,44 @@ class InstallWindow(QtWidgets.QWidget):
         self.banner = BlurredBanner()
         self.main_layout.addWidget(self.banner)
         
-        # Header Info Area
+        # Cabecera estilo UWP: texto a la izquierda, icono en la esquina superior
+        # derecha dentro de un cuadrado del color de acento del SO.
         header = QtWidgets.QWidget()
         header.setObjectName("HeaderArea")
-        header.setFixedHeight(100)
         h_layout = QtWidgets.QHBoxLayout(header)
-        h_layout.setContentsMargins(30, 15, 30, 15)
+        h_layout.setContentsMargins(30, 24, 30, 18)
         h_layout.setSpacing(20)
-        
-        # Icon
-        self.icon_label = QtWidgets.QLabel()
-        self.icon_label.setFixedSize(72, 72)
-        self.icon_label.setStyleSheet("background: #f1f3f4; border-radius: 12px; border: 1px solid #dadce0;")
-        self.icon_label.setScaledContents(True)
-        if os.path.exists(DEFAULT_ICON):
-             self.icon_label.setPixmap(QtGui.QPixmap(DEFAULT_ICON))
-        h_layout.addWidget(self.icon_label)
-        
-        # Text Info
+
+        # Texto: título grande + metadatos (Editor / Versión / Origen).
         meta_v = QtWidgets.QVBoxLayout()
-        meta_v.setSpacing(4)
-        self.title_lbl = QtWidgets.QLabel(self.app_name)
+        meta_v.setSpacing(6)
+        self.title_lbl = QtWidgets.QLabel(self._headline())
         self.title_lbl.setObjectName("AppTitle")
+        self.title_lbl.setWordWrap(True)
         meta_v.addWidget(self.title_lbl)
-        
-        self.meta_lbl = QtWidgets.QLabel(self.meta_publisher)
+
+        self.meta_lbl = QtWidgets.QLabel(self._meta_line())
         self.meta_lbl.setObjectName("AppMeta")
         meta_v.addWidget(self.meta_lbl)
-        
-        self.ver_lbl = QtWidgets.QLabel(f"Plataforma: {self.meta_platform}")
+
+        self.ver_lbl = QtWidgets.QLabel(self._version_line())
         self.ver_lbl.setObjectName("AppVersion")
         meta_v.addWidget(self.ver_lbl)
-        
-        h_layout.addLayout(meta_v)
-        h_layout.addStretch()
-        
-        # Actions
-        action_h = QtWidgets.QHBoxLayout()
-        action_h.setSpacing(10)
-        
-        self.install_btn = QtWidgets.QPushButton("Instalar")
-        self.install_btn.setObjectName("PrimaryBtn")
-        #self.install_btn.setCursor(QtCore.Qt.PointingHandCursor)
-        self.install_btn.setMinimumWidth(120)
-        action_h.addWidget(self.install_btn)
-        
-        self.share_btn = QtWidgets.QPushButton("Compartir")
-        #self.share_btn.setCursor(QtCore.Qt.PointingHandCursor)
-        self.share_btn.setMinimumWidth(120)
-        action_h.addWidget(self.share_btn)
 
-        if self.installed_path:
-            self.uninstall_btn = QtWidgets.QPushButton("Desinstalar")
-            #self.uninstall_btn.setCursor(QtCore.Qt.PointingHandCursor)
-            self.uninstall_btn.setMinimumWidth(120)
-            self.uninstall_btn.setStyleSheet("color: #d93025; border: 1px solid #f28b82;")
-            action_h.addWidget(self.uninstall_btn)
-        
-        h_layout.addLayout(action_h)
-        
+        h_layout.addLayout(meta_v, 1)
+
+        # Icono a la derecha, alineado arriba.
+        icon_col = QtWidgets.QVBoxLayout()
+        icon_col.setContentsMargins(0, 0, 0, 0)
+        self.icon_label = QtWidgets.QLabel()
+        self.icon_label.setObjectName("AppIcon")
+        self.icon_label.setFixedSize(96, 96)
+        self.icon_label.setScaledContents(False)
+        self.icon_label.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
+        self._set_icon_pixmap(None)
+        icon_col.addWidget(self.icon_label, 0, QtCore.Qt.AlignmentFlag.AlignTop)
+        h_layout.addLayout(icon_col)
+
         self.main_layout.addWidget(header)
         
         # Content Area (Split)
@@ -1524,18 +1738,22 @@ class InstallWindow(QtWidgets.QWidget):
         
         # Right: Progress & Logs
         right_panel = QtWidgets.QWidget()
+        right_panel.setObjectName("StatusPanel")
         r_layout = QtWidgets.QVBoxLayout(right_panel)
-        r_layout.setContentsMargins(0, 0, 0, 0)
+        r_layout.setContentsMargins(14, 12, 14, 12)
         r_layout.setSpacing(10)
         
         lbl_log = QtWidgets.QLabel("Estado de instalación")
-        lbl_log.setStyleSheet("font-weight: bold; color: #202124;")
+        lbl_log.setStyleSheet("font-weight: 600; color: #1B1B1B; background: transparent;")
         r_layout.addWidget(lbl_log)
         
         self.progress = QtWidgets.QProgressBar()
         self.progress.setTextVisible(False)
         self.progress.setFixedHeight(4)
-        self.progress.setStyleSheet("QProgressBar { border: none; background: #e8eaed; border-radius: 2px; } QProgressBar::chunk { background: #ff6d00; border-radius: 2px; }")
+        self.progress.setStyleSheet(
+            "QProgressBar { border: none; background: #E8E8E8; border-radius: 2px; }"
+            f" QProgressBar::chunk {{ background: {self.accent}; border-radius: 2px; }}"
+        )
         r_layout.addWidget(self.progress)
         
         self.log = QtWidgets.QTextEdit()
@@ -1546,6 +1764,44 @@ class InstallWindow(QtWidgets.QWidget):
         c_layout.addWidget(right_panel, 35)
         
         self.main_layout.addWidget(content)
+        
+        # Pie estilo UWP: icono informativo a la izquierda y acciones a la
+        # derecha, alineadas al borde inferior.
+        footer = QtWidgets.QWidget()
+        footer.setObjectName("FooterArea")
+        f_layout = QtWidgets.QHBoxLayout(footer)
+        f_layout.setContentsMargins(30, 12, 30, 18)
+        f_layout.setSpacing(10)
+
+        info_badge = QtWidgets.QLabel("i")
+        info_badge.setObjectName("InfoBadge")
+        info_badge.setFixedSize(22, 22)
+        info_badge.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
+        f_layout.addWidget(info_badge, 0, QtCore.Qt.AlignmentFlag.AlignBottom)
+        f_layout.addStretch()
+
+        action_h = QtWidgets.QHBoxLayout()
+        action_h.setSpacing(10)
+
+        self.install_btn = QtWidgets.QPushButton("Instalar")
+        self.install_btn.setObjectName("PrimaryBtn")
+        self.install_btn.setMinimumWidth(120)
+        action_h.addWidget(self.install_btn)
+
+        self.share_btn = QtWidgets.QPushButton("Compartir")
+        self.share_btn.setObjectName("SecondaryBtn")
+        self.share_btn.setMinimumWidth(120)
+        action_h.addWidget(self.share_btn)
+
+        if self.installed_path:
+            self.uninstall_btn = QtWidgets.QPushButton("Desinstalar")
+            self.uninstall_btn.setObjectName("DangerBtn")
+            self.uninstall_btn.setMinimumWidth(120)
+            action_h.addWidget(self.uninstall_btn)
+
+        f_layout.addLayout(action_h)
+
+        self.main_layout.addWidget(footer)
         
         # Connects
         if self.installed_path:
@@ -1563,17 +1819,12 @@ class InstallWindow(QtWidgets.QWidget):
 
         # Offline Mode Adjustments (UI Updates)
         if self.local_file_path:
-            # Enable share button for local packages if we have author info
-            # self.share_btn.setVisible(False)  # Keep it visible now
-            self.meta_lbl.setText(f"{self.meta_publisher} (Local)")
-            self.ver_lbl.setText(f"Versión: {self.meta_version} | Plataforma: {self.meta_platform}")
-            
+            self._refresh_header()
+
             # Check Compatibility
             is_compat, msg = check_platform_compatibility(self.meta_platform)
             if not is_compat:
-                self.install_btn.setEnabled(False)
-                self.install_btn.setText("Incompatible")
-                self.install_btn.setStyleSheet("background-color: #d93025; color: white;")
+                self._mark_incompatible(msg)
                 QtWidgets.QMessageBox.critical(self, "Incompatible", msg)
             
             # Load local assets if available
@@ -1607,14 +1858,66 @@ class InstallWindow(QtWidgets.QWidget):
             is_compat, msg = check_platform_compatibility(self.meta_platform)
             if not is_compat:
                 self.install_btn.setEnabled(False)
-                self.install_btn.setText("No Compatible")
-                self.install_btn.setStyleSheet("background-color: #e0e0e0; color: #888; border: 1px solid #ccc;")
-                self.ver_lbl.setText(f"Versión: {self.meta_version} | Plataforma: {self.meta_platform} (INCOMPATIBLE)")
-                self.ver_lbl.setStyleSheet("color: #d93025; font-weight: bold;")
+                self._mark_incompatible(msg)
                 QtWidgets.QMessageBox.warning(self, "Incompatible", msg)
 
         except Exception as e:
             print(f"Error reading local package metadata: {e}")
+
+    def _headline(self) -> str:
+        """Título grande estilo UWP: "¿Instalar X?" o "X ya está instalado"."""
+        if self.installed_path:
+            return f"{self.app_name} ya está instalado"
+        return f"¿Instalar {self.app_name}?"
+
+    def _meta_line(self) -> str:
+        """Línea de editor/origen bajo el título."""
+        publisher = self.meta_publisher or self.owner
+        if self.local_file_path:
+            return f"Editor: {publisher} · Origen: archivo local"
+        return f"Editor: {publisher} · Origen: {self.owner}/{self.repo}"
+
+    def _version_line(self) -> str:
+        """Línea de versión y plataforma."""
+        version = self.meta_version or "Desconocida"
+        platform_value = self.meta_platform or "Desconocida"
+        return f"Versión: {version} · Plataforma: {platform_value}"
+
+    def _refresh_header(self):
+        """Repinta título y metadatos tras descubrir la identidad del paquete."""
+        self.title_lbl.setText(self._headline())
+        self.meta_lbl.setText(self._meta_line())
+        self.ver_lbl.setText(self._version_line())
+
+    def _mark_incompatible(self, msg: str = ""):
+        """Bloquea la instalación y muestra el aviso de incompatibilidad.
+
+        La barra de estado (panel inferior) es el lugar UWP para el mensaje; no
+        se altera el estilo del botón primario para no romper la hoja global.
+        """
+        self.install_btn.setEnabled(False)
+        self.install_btn.setText("Incompatible")
+        self.ver_lbl.setText(f"{self._version_line()} · INCOMPATIBLE")
+        self.ver_lbl.setStyleSheet("color: #C42B1C; font-weight: 600;")
+        if msg:
+            self.log_msg(f"Incompatible: {msg}")
+
+    def _set_icon_pixmap(self, data: bytes | None):
+        """Pinta el icono del paquete sobre un cuadrado del acento del SO.
+
+        Si no hay icono válido se deja el cuadrado de acento con las iniciales
+        de la app, en vez del recuadro gris vacío que mostraba el instalador.
+        """
+        pix = render_app_icon(data, size=96, accent=self.accent) if data else None
+        if pix is not None:
+            self.icon_label.setPixmap(pix)
+            return
+        initials = "".join(part[:1] for part in re.split(r"[\s._-]+", self.app_name) if part)[:2].upper()
+        self.icon_label.setText(initials or "?")
+        self.icon_label.setStyleSheet(
+            f"#AppIcon {{ background-color: {self.accent}; border-radius: 6px;"
+            f" color: #FFFFFF; font-size: 34px; font-weight: 600; }}"
+        )
 
     def load_local_assets_to_ui(self):
         """Carga el icono y el banner del paquete en la interfaz.
@@ -1625,23 +1928,18 @@ class InstallWindow(QtWidgets.QWidget):
         """
         # Icono de cabecera del contenedor v2/.asksome
         if getattr(self, "package_icon", b""):
-            pix = QtGui.QPixmap()
-            if pix.loadFromData(self.package_icon):
-                """self.icon_label.setPixmap(
-                    pix.scaled(72, 72, QtCore.Qt.KeepAspectRatio, QtCore.Qt.SmoothTransformation)
-                )"""
+            self._set_icon_pixmap(self.package_icon)
 
         if not self.temp_extract_dir:
             return
 
         # Icono extraído (ZIP histórico) si no se pintó el de cabecera.
-        icon_path = self.temp_extract_dir / "app" / "app-icon.ico"
-        if not icon_path.exists():
-             icon_path = self.temp_extract_dir / "app" / "app-icon.png"
-
-        if icon_path.exists() and not getattr(self, "package_icon", b""):
-            pix = QtGui.QPixmap(str(icon_path))
-##            self.icon_label.setPixmap(pix.scaled(72, 72, QtCore.Qt.KeepAspectRatio, QtCore.Qt.SmoothTransformation))
+        if not getattr(self, "package_icon", b""):
+            icon_path = self.temp_extract_dir / "app" / "app-icon.ico"
+            if not icon_path.exists():
+                icon_path = self.temp_extract_dir / "app" / "app-icon.png"
+            if icon_path.exists():
+                self._set_icon_pixmap(icon_path.read_bytes())
 
         # Banner
         banner_path = self.temp_extract_dir / "assets" / "splash.png"
@@ -1707,17 +2005,12 @@ class InstallWindow(QtWidgets.QWidget):
             if details.get('platform'): self.meta_platform = details['platform']
             
             # Update UI labels with new metadata
-            self.meta_lbl.setText(self.meta_publisher)
-            self.ver_lbl.setText(f"Versión: {self.meta_version} | Plataforma: {self.meta_platform}")
-            
+            self._refresh_header()
+
             # Check Platform Compatibility
             is_compat, msg = check_platform_compatibility(self.meta_platform)
             if not is_compat:
-                self.install_btn.setEnabled(False)
-                self.install_btn.setText("No Compatible")
-                self.install_btn.setStyleSheet("background-color: #e0e0e0; color: #888; border: 1px solid #ccc;")
-                self.ver_lbl.setText(f"Versión: {self.meta_version} | Plataforma: {self.meta_platform} (INCOMPATIBLE)")
-                self.ver_lbl.setStyleSheet("color: #d93025; font-weight: bold;")
+                self._mark_incompatible(msg)
                 # We don't show a popup here to avoid spamming if just viewing, but the UI is clear.
 
         # Icon
@@ -1725,16 +2018,12 @@ class InstallWindow(QtWidgets.QWidget):
             icon_url = f"https://raw.githubusercontent.com/{self.owner}/{self.repo}/main/app/app-icon.ico"
             r = requests.get(icon_url, timeout=4)
             if r.ok:
-                pix = QtGui.QPixmap()
-                pix.loadFromData(r.content)
-                #self.icon_label.setPixmap(pix.scaled(72, 72, QtCore.Qt.KeepAspectRatio, QtCore.Qt.SmoothTransformation))
+                self._set_icon_pixmap(r.content)
             else:
                 icon_url_png = f"https://raw.githubusercontent.com/{self.owner}/{self.repo}/main/app/app-icon.png"
                 r = requests.get(icon_url_png, timeout=4)
                 if r.ok:
-                    pix = QtGui.QPixmap()
-                    pix.loadFromData(r.content)
-##                    self.icon_label.setPixmap(pix.scaled(72, 72, QtCore.Qt.KeepAspectRatio, QtCore.Qt.SmoothTransformation))
+                    self._set_icon_pixmap(r.content)
         except Exception:
             pass
 
@@ -1929,7 +2218,7 @@ class InstallWorker(QtCore.QRunnable):
         try:
             if self.local_file_path:
                 # Offline Mode
-                self.signals.log.emit(f"Preparando instalación de paquete local...")
+                self.signals.log.emit("Preparando instalación de paquete local...")
                 
                 # Preferir los metadatos de la cabecera del paquete; el nombre
                 # de archivo sólo es el respaldo.
@@ -1958,6 +2247,7 @@ class InstallWorker(QtCore.QRunnable):
                 self.signals.log.emit("Instalando...")
                 dest_base = create_documents_app_folder(publisher, app_id, version, platformstr)
                 move_install_tree(extract_dir, dest_base)
+                normalize_install_permissions(dest_base)
                 ensure_executable_bits(dest_base)
                 
                 # Shortcut logic
@@ -2031,6 +2321,7 @@ class InstallWorker(QtCore.QRunnable):
             platform_to_use = normalize_platform(header.get("platform") or platformstr or "unknown")
             dest_base = create_documents_app_folder(publisher_to_use, app_id_to_use, version_to_use, platform_to_use)
             move_install_tree(extract_dir, dest_base)
+            normalize_install_permissions(dest_base)
             ensure_executable_bits(dest_base)
             
             # Download details.xml to install folder for future reference
@@ -2258,7 +2549,8 @@ def main(argv):
 
     # === APP EXECUTION ===
     app = QtWidgets.QApplication(argv)
-    app.setStyleSheet(GLOBAL_QSS)
+    accent = system_accent_color()
+    app.setStyleSheet(build_global_qss(accent))
 
     # Parse arguments with explicit flags
     if len(argv) >= 2:
