@@ -23,19 +23,23 @@ Repo: `https://github.com/JesusQuijada34/flarmhandler.git`, rama de trabajo `mai
 - `lib/` porta el ecosistema Fluthin: `iflapp_format` (contenedor v2),
   `asksome_format`, `mexf_*`, `native_shell`, `package_shell`, `safe_zip`.
   `HAS_PACKAGE_LIBS` es `False` si faltan; el handler degrada sin ellos.
-- `lib/splash_screen.py` — splash dinámico estilo UWP (Fase 2). Clasifica la
-  pantalla en `landscape`/`portrait`/`square`, busca los assets
-  `{app}-landscapeSplash.png`/`{app}-portraitSplash.png` (o los genéricos
-  `splash.png`/`splash_setup.png`), rellena su transparencia con el acento del
-  SO y, si no hay ninguno, genera un marco transparente con el icono centrado a
-  `512x512`. `SplashWindow.finish_when_ready(target)` desvanece el splash en el
-  primer `paintEvent` de la ventana (con temporizador de seguridad). Se mantiene
+- `lib/splash_screen.py` — splash integrado estilo UWP (Fase 2), inspirado en
+  `IntegratedSplash` de `packagemaker` (commit `f15bfde`). **No genera assets**:
+  es una ventana del **mismo tamaño que la principal**, con el fondo del
+  **acento del SO** y el **icono del paquete** (`app/app-icon.ico`) centrado.
+  `resolve_icon_source(window)` prioriza `package_icon` (cabecera del contenedor)
+  y cae a `app/app-icon.ico`/`.png` del paquete extraído;
+  `IntegratedSplash.finish_when_ready(target)` muestra la ventana y desvanece el
+  splash en su primer `paintEvent` (con temporizador de seguridad). Se mantiene
   fuera de `flarmhandler.py` porque la Fase 3 lo copia a la `lib/` de los
   proyectos `iflapp` como *bootloader*.
-- `InstallWindow._apply_banner_asset(assets_dir, has_assets)` elige el splash de
-  cabecera por orientación; sin assets aplica **Mica** (`_apply_mica`: propiedad
-  `backdrop="mica"` + `WipeWindow` de `leviathan_ui`, ambos opcionales). El flujo
-  online prueba los mismos candidatos vía GitHub raw y cae a Mica si no hay.
+- El **banner de cabecera** (dentro de la propia ventana) es independiente del
+  splash de arranque: `_apply_banner_asset(assets_dir, has_assets)` usa
+  `find_banner_asset()` + `banner_candidates()` (helpers locales) para elegir el
+  asset por orientación (`screen_orientation()`); sin assets aplica **Mica**
+  (`_apply_mica`: propiedad `backdrop="mica"` + `WipeWindow` de `leviathan_ui`,
+  ambos opcionales). El flujo online prueba los mismos candidatos vía GitHub raw
+  y cae a Mica si no hay.
 - `read_package_identity()` lee la cabecera sin descifrar y devuelve las mismas
   claves que `parse_details_xml` (`name`, `publisher`, `app`, `version`,
   `platform`, `author`), así el flujo no distingue v2 / asksome / ZIP.
@@ -49,10 +53,15 @@ Repo: `https://github.com/JesusQuijada34/flarmhandler.git`, rama de trabajo `mai
   `AccentColor` de DWM en Windows y `gsettings ... accent-color` en GNOME; cae a
   `DEFAULT_ACCENT` (`#0078D4`) si no puede. `shade_color()` oscurece y
   `tint_color()` mezcla hacia blanco (multiplicar saturaba a cian puro).
-- `GLOBAL_QSS` es una **plantilla** con placeholders `{accent}`, `{accent_hover}`,
-  `{accent_pressed}` y `{accent_soft}`. Se resuelve con `build_global_qss()`, que
-  usa `str.replace` (no `str.format`) porque la hoja contiene llaves CSS que
-  `format` interpretaría como campos. `main()` llama a `build_global_qss(accent)`.
+- Las hojas de estilo viven en **`source/qss/{qtcontrolid}.qss`** (un fichero por
+  control Qt: `qwidget`, `qpushbutton`, `qlabel`, `qlineedit`, `qscrollbar`,
+  `qmessagebox`, `qprogressbar`). Son la **única fuente** de estilos:
+  `load_qss_parts()` las concatena en orden alfabético y `build_global_qss()` las
+  devuelve con los placeholders `{accent}`, `{accent_hover}`, `{accent_pressed}`
+  y `{accent_soft}` resueltos. `build_global_qss()` usa `str.replace` (no
+  `str.format`) porque las hojas contienen llaves CSS que `format` interpretaría
+  como campos. `main()` llama a `build_global_qss(accent)`. Editar un estilo es
+  tocar el `.qss`, nunca el `.py`.
 - `render_app_icon(data, size, accent)` pinta el icono del paquete sobre un
   cuadrado del color de acento (estilo UWP). Si el icono es transparente o no
   hay, el acento se ve detrás. Sin icono válido, `_set_icon_pixmap` muestra las
@@ -88,6 +97,7 @@ Repo: `https://github.com/JesusQuijada34/flarmhandler.git`, rama de trabajo `mai
 ## Plan maestro
 `bugs.md` es la hoja de ruta de 3 fases. Fase 1 (bugs críticos del instalador)
 completada: permisos, detección de plataforma/assets y QSS UWP. Fase 2 (banner
-borroso por orientación, Mica y splash dinámico con fade-out) completada.
+borroso por orientación, Mica, splash integrado sin assets con fade-out y
+centralización de QSS en `source/qss/`) completada.
 Fase 3 (librería global de splashes e inyección *bootloader* en `packagemaker`)
 pendiente.

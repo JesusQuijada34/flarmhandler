@@ -1,0 +1,80 @@
+/* Botones (geometría UWP: esquinas 4px). El acento del SO entra por
+   {accent} / {accent_hover} / {accent_pressed} / {accent_soft}. */
+
+QPushButton {
+    background-color: #F3F3F3;
+    color: #1B1B1B;
+    border: 1px solid #D6D6D6;
+    border-radius: 4px;
+    padding: 7px 22px;
+    font-weight: 500;
+}
+QPushButton:hover {
+    background-color: #E9E9E9;
+}
+QPushButton:pressed {
+    background-color: #DEDEDE;
+}
+QPushButton:disabled {
+    color: #9A9A9A;
+    background-color: #F7F7F7;
+    border-color: #E6E6E6;
+}
+
+/* Botón primario (Instalar / Ejecutar) */
+QPushButton#PrimaryBtn {
+    background-color: {accent};
+    color: #FFFFFF;
+    border: none;
+}
+QPushButton#PrimaryBtn:hover {
+    background-color: {accent_hover};
+}
+QPushButton#PrimaryBtn:pressed {
+    background-color: {accent_pressed};
+}
+QPushButton#PrimaryBtn:disabled {
+    background-color: #E8E8E8;
+    color: #9A9A9A;
+}
+
+/* Botón secundario (Compartir) */
+QPushButton#SecondaryBtn {
+    background-color: transparent;
+    color: {accent};
+    border: 1px solid #D6D6D6;
+}
+QPushButton#SecondaryBtn:hover {
+    background-color: {accent_soft};
+}
+
+/* Botón destructivo (Desinstalar) */
+QPushButton#DangerBtn {
+    background-color: transparent;
+    color: #C42B1C;
+    border: 1px solid #E7B7B2;
+}
+QPushButton#DangerBtn:hover {
+    background-color: #FDF3F2;
+}
+
+/* Botones de la barra de título (minimizar / maximizar / cerrar) */
+#TitleBtn {
+    background: transparent;
+    border: none;
+    border-radius: 0px;
+    padding: 0px;
+    min-width: 46px;
+    max-width: 46px;
+    min-height: 32px;
+    max-height: 32px;
+}
+#TitleBtn:hover {
+    background-color: #E5E5E5;
+}
+/* El botón de cerrar se marca con la propiedad ``id="close"``; el selector
+   anterior ``#TitleBtn#close`` no casaba con nada y el rojo nunca aparecía. */
+#TitleBtn[id="close"]:hover {
+    background-color: #E81123;
+    color: white;
+}

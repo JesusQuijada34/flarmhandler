@@ -1,0 +1,50 @@
+/* Reset global y fondo de ventana (estilo UWP).
+   El acento del SO se inyecta con los placeholders {accent}. */
+
+* {
+    outline: none;
+}
+
+QWidget {
+    background: #FFFFFF;
+    font-family: "Segoe UI", "Roboto", "Helvetica Neue", Helvetica, Arial, sans-serif;
+    color: #1B1B1B;
+    font-size: 14px;
+}
+
+/* Barra de título personalizada */
+#TitleBar {
+    background-color: #F3F3F3;
+    min-height: 32px;
+}
+
+/* Cabecera (icono + metadatos + acciones) */
+#HeaderArea {
+    background-color: #FFFFFF;
+    border-bottom: 1px solid #E6E6E6;
+}
+
+/* Panel de estado: borde resaltado con el acento del SO (estilo UWP) */
+#StatusPanel {
+    background-color: #FBFBFB;
+    border: 2px solid {accent};
+    border-radius: 6px;
+}
+
+/* Pie con las acciones y el icono informativo */
+#FooterArea {
+    background-color: #FFFFFF;
+    border-top: 1px solid #E6E6E6;
+}
+
+/* Fondo Mica (cuando el paquete no trae assets de splash): las áreas de la
+   ventana se vuelven translúcidas para que se vea el material del SO detrás. */
+#InstallWindow[backdrop="mica"],
+#InstallWindow[backdrop="mica"] #HeaderArea,
+#InstallWindow[backdrop="mica"] #FooterArea,
+#InstallWindow[backdrop="mica"] #ContentArea {
+    background-color: transparent;
+}
+#InstallWindow[backdrop="mica"] #StatusPanel {
+    background-color: rgba(251, 251, 251, 0.72);
+}

@@ -41,9 +41,9 @@ except Exception as _pkg_exc:  # pragma: no cover - entorno incompleto
     HAS_PACKAGE_LIBS = False
     _PACKAGE_LIBS_ERROR = str(_pkg_exc)
 
-# --- Splash dinámico (Fase 2 del plan maestro) ---
-# La lógica de orientación/assets/fade-out vive en ``lib/splash_screen`` para
-# poder reutilizarla como librería global (Fase 3, inyección bootloader).
+# --- Splash integrado (Fase 2 del plan maestro) ---
+# La lógica del splash vive en ``lib/splash_screen`` para poder reutilizarla
+# como librería global (Fase 3, inyección bootloader).
 try:
     from lib import splash_screen as _splash
     HAS_SPLASH_LIB = True
@@ -93,7 +93,6 @@ except Exception:
 DEFAULT_SPLASH = "assets/splash.png"
 DEFAULT_ICON = "assets/product_logo.png"
 SPLASH_SETUP = "assets/splash_setup.png"
-
 GITHUB_RELEASES_API = "https://api.github.com/repos/{owner}/{repo}/releases"
 SCHEME = "Fluthinstore"
 MIMETYPE = "application/x-Fluthinstore"
@@ -200,237 +199,24 @@ def render_app_icon(data: bytes, size: int = 96, accent: str = DEFAULT_ACCENT) -
     painter.end()
     return canvas
 
-# --- Global QSS (UWP theme; el acento lo inyecta build_global_qss) ---
-# --- Hoja de estilos global (UWP). El acento del SO se inyecta con f-string. ---
-GLOBAL_QSS = """
-/* Global Reset */
-* {
-    outline: none;
-}
-QWidget {
-    background: #FFFFFF;
-    font-family: "Segoe UI", "Roboto", "Helvetica Neue", Helvetica, Arial, sans-serif;
-    color: #1B1B1B;
-    font-size: 14px;
-}
+# --- Hojas de estilo (un fichero por control Qt en ``source/qss/``) ---
+# ``source/qss/{qtcontrolid}.qss`` es la única fuente de estilos: cada archivo
+# agrupa las reglas de un control (QPushButton, QLabel, ...) y usa los
+# placeholders ``{accent}``/``{accent_hover}``/``{accent_pressed}``/``{accent_soft}``
+# que ``build_global_qss`` resuelve con el acento del SO. Así los estilos se
+# pueden reutilizar (Fase 3) y editar sin tocar el código.
+QSS_DIR = _ROOT / "source" / "qss"
 
-/* MessageBox */
-QMessageBox {
-    background-color: #FFFFFF;
-}
-QMessageBox QLabel {
-    color: #1B1B1B;
-    background-color: transparent;
-}
-QMessageBox QPushButton {
-    background-color: #F3F3F3;
-    color: #1B1B1B;
-    border: 1px solid #D6D6D6;
-    border-radius: 4px;
-    padding: 7px 22px;
-    min-width: 88px;
-}
-QMessageBox QPushButton:hover {
-    background-color: #E9E9E9;
-}
-QMessageBox QPushButton:pressed {
-    background-color: #DEDEDE;
-}
-QMessageBox QPushButton:default {
-    background-color: {accent};
-    color: #FFFFFF;
-    border: none;
-}
-QMessageBox QPushButton:default:hover {
-    background-color: {accent_hover};
-}
 
-/* Scrollbars */
-QScrollBar:vertical {
-    border: none;
-    background: #F3F3F3;
-    width: 10px;
-    margin: 0px;
-}
-QScrollBar::handle:vertical {
-    background: #C9C9C9;
-    min-height: 20px;
-    border-radius: 5px;
-}
-QScrollBar::handle:vertical:hover {
-    background: #ADADAD;
-}
-QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
-    height: 0px;
-}
-
-/* Botones (geometría UWP: esquinas 4px, sin mayúsculas forzadas) */
-QPushButton {
-    background-color: #F3F3F3;
-    color: #1B1B1B;
-    border: 1px solid #D6D6D6;
-    border-radius: 4px;
-    padding: 7px 22px;
-    font-weight: 500;
-}
-QPushButton:hover {
-    background-color: #E9E9E9;
-}
-QPushButton:pressed {
-    background-color: #DEDEDE;
-}
-QPushButton:disabled {
-    color: #9A9A9A;
-    background-color: #F7F7F7;
-    border-color: #E6E6E6;
-}
-
-/* Botón primario (Instalar / Ejecutar) */
-QPushButton#PrimaryBtn {
-    background-color: {accent};
-    color: #FFFFFF;
-    border: none;
-}
-QPushButton#PrimaryBtn:hover {
-    background-color: {accent_hover};
-}
-QPushButton#PrimaryBtn:pressed {
-    background-color: {accent_pressed};
-}
-QPushButton#PrimaryBtn:disabled {
-    background-color: #E8E8E8;
-    color: #9A9A9A;
-}
-
-/* Botón secundario (Compartir) */
-QPushButton#SecondaryBtn {
-    background-color: transparent;
-    color: {accent};
-    border: 1px solid #D6D6D6;
-}
-QPushButton#SecondaryBtn:hover {
-    background-color: {accent_soft};
-}
-
-/* Entradas */
-QLineEdit, QTextEdit {
-    background: #FFFFFF;
-    border: 1px solid #D6D6D6;
-    border-radius: 4px;
-    padding: 8px;
-    selection-background-color: {accent};
-    selection-color: #FFFFFF;
-}
-QLineEdit:focus, QTextEdit:focus {
-    border: 2px solid {accent};
-    padding: 7px;
-}
-
-/* Barra de título personalizada */
-#TitleBar {
-    background-color: #F3F3F3;
-    min-height: 32px;
-}
-#TitleLabel {
-    color: #5F5F5F;
-    font-size: 12px;
-    padding-left: 12px;
-}
-#TitleBtn {
-    background: transparent;
-    border: none;
-    border-radius: 0px;
-    padding: 0px;
-    min-width: 46px;
-    max-width: 46px;
-    min-height: 32px;
-    max-height: 32px;
-}
-#TitleBtn:hover {
-    background-color: #E5E5E5;
-}
-#TitleBtn#close:hover {
-    background-color: #E81123;
-    color: white;
-}
-
-/* Cabecera (icono + metadatos + acciones) */
-#HeaderArea {
-    background-color: #FFFFFF;
-    border-bottom: 1px solid #E6E6E6;
-}
-#AppTitle {
-    font-size: 24px;
-    font-weight: 600;
-    color: #1B1B1B;
-}
-#AppMeta {
-    color: #5F5F5F;
-    font-weight: 500;
-    font-size: 14px;
-}
-#AppVersion {
-    color: #8A8A8A;
-    font-size: 12px;
-}
-
-/* Contenedor del icono: cuadrado con el color de acento del SO */
-#AppIcon {
-    background-color: {accent};
-    border-radius: 6px;
-}
-
-/* Panel de estado: borde resaltado con el acento del SO (estilo UWP) */
-#StatusPanel {
-    background-color: #FBFBFB;
-    border: 2px solid {accent};
-    border-radius: 6px;
-}
-
-/* Pie con las acciones y el icono informativo */
-#FooterArea {
-    background-color: #FFFFFF;
-    border-top: 1px solid #E6E6E6;
-}
-#InfoBadge {
-    background-color: transparent;
-    color: #5F5F5F;
-    border: 1px solid #C9C9C9;
-    border-radius: 11px;
-    font-size: 12px;
-    font-weight: 700;
-}
-QPushButton#DangerBtn {
-    background-color: transparent;
-    color: #C42B1C;
-    border: 1px solid #E7B7B2;
-}
-QPushButton#DangerBtn:hover {
-    background-color: #FDF3F2;
-}
-
-/* Registro de instalación */
-#LogArea {
-    background-color: #1F1F1F;
-    color: #E8E8E8;
-    font-family: "Cascadia Mono", "Consolas", monospace;
-    font-size: 12px;
-    border: none;
-    border-radius: 4px;
-}
-
-/* Fondo Mica (cuando el paquete no trae assets de splash): las áreas de la
-   ventana se vuelven translúcidas para que se vea el material del SO detrás. */
-#InstallWindow[backdrop="mica"],
-#InstallWindow[backdrop="mica"] #HeaderArea,
-#InstallWindow[backdrop="mica"] #FooterArea,
-#InstallWindow[backdrop="mica"] #ContentArea {
-    background-color: transparent;
-}
-#InstallWindow[backdrop="mica"] #StatusPanel {
-    background-color: rgba(251, 251, 251, 0.72);
-}
-"""
+def load_qss_parts(qss_dir: Path | str | None = None) -> str:
+    """Concatena los ``.qss`` de ``source/qss`` (orden alfabético) en una hoja."""
+    directory = Path(qss_dir) if qss_dir else QSS_DIR
+    if not directory.is_dir():
+        return ""
+    parts = []
+    for path in sorted(directory.glob("*.qss")):
+        parts.append(f"/* === {path.name} === */\n{path.read_text(encoding='utf-8')}")
+    return "\n".join(parts)
 
 
 def build_global_qss(accent: str | None = None) -> str:
@@ -446,10 +232,66 @@ def build_global_qss(accent: str | None = None) -> str:
         "{accent_pressed}": shade_color(accent, 0.78),
         "{accent_soft}": tint_color(accent, 0.88),
     }
-    qss = GLOBAL_QSS
+    qss = load_qss_parts()
     for token, value in replacements.items():
         qss = qss.replace(token, value)
     return qss
+
+
+# --- Banner de cabecera según la orientación de la pantalla ---
+# El banner es el encabezado dentro de la propia ventana (no confundir con el
+# splash de arranque, que ya no usa assets). En horizontal se usa el splash
+# ancho; en vertical, el banner de setup (más cuadrado).
+LANDSCAPE, PORTRAIT, SQUARE = "landscape", "portrait", "square"
+
+
+def screen_orientation() -> str:
+    """Clasifica la pantalla principal en ``landscape``/``portrait``/``square``."""
+    app = QtWidgets.QApplication.instance()
+    if app is None:
+        return LANDSCAPE
+    screen = app.primaryScreen()
+    if screen is None:
+        return LANDSCAPE
+    geo = screen.availableGeometry()
+    return _orientation_for(geo.width(), geo.height())
+
+
+def _orientation_for(width: int, height: int) -> str:
+    if width > height:
+        return LANDSCAPE
+    if height > width:
+        return PORTRAIT
+    return SQUARE
+
+
+def banner_candidates(app_name: str, orientation: str) -> list[str]:
+    """Nombres de asset del banner, del más específico al genérico."""
+    app = (app_name or "").strip().lower()
+    names: list[str] = []
+    if app:
+        if orientation == PORTRAIT:
+            names.append(f"{app}-portraitSplash.png")
+        names.append(f"{app}-landscapeSplash.png")
+    if orientation == PORTRAIT:
+        names += ["splash_setup.png", "splash_Setup.png", "splash.png"]
+    else:
+        names += ["splash.png", "splash_setup.png", "splash_Setup.png"]
+    seen: set[str] = set()
+    return [n for n in names if not (n in seen or seen.add(n))]
+
+
+def find_banner_asset(assets_dir: Path | None, app_name: str,
+                      orientation: str, has_assets: bool = True) -> Path | None:
+    """Primer asset de banner existente en *assets_dir*, o ``None``."""
+    if not has_assets or assets_dir is None or not Path(assets_dir).is_dir():
+        return None
+    for name in banner_candidates(app_name, orientation):
+        candidate = Path(assets_dir) / name
+        if candidate.is_file():
+            return candidate
+    return None
+
 
 def is_admin():
     try:
@@ -1999,17 +1841,15 @@ class InstallWindow(QtWidgets.QWidget):
             pass
 
     def _apply_banner_asset(self, assets_dir: Path | None, has_assets: bool):
-        """Elige el splash de cabecera según la orientación de la pantalla.
+        """Elige el splash de cabecera (banner) según la orientación de pantalla.
 
         Horizontal → ``splash.png``; vertical → ``splash_setup.png``; sin assets
-        → Mica completo. Delega en ``lib/splash_screen`` para compartir la
-        lógica con la librería global de splashes (Fase 3).
+        → Mica completo. Es independiente del splash de arranque (que ya no usa
+        assets): el banner es el encabezado dentro de la propia ventana.
         """
-        if not HAS_SPLASH_LIB or _splash is None:
-            return
-        orientation = _splash.current_orientation()
+        orientation = screen_orientation()
         asset = (
-            _splash.find_splash_asset(assets_dir, self.app_name, orientation, has_assets)
+            find_banner_asset(assets_dir, self.app_name, orientation, has_assets)
             if assets_dir else None
         )
         if asset is None:
@@ -2130,11 +1970,8 @@ class InstallWindow(QtWidgets.QWidget):
         # Banner: se prueban los assets de splash por orientación (igual que en
         # el flujo local). Si ninguno existe, se aplica Mica a toda la ventana.
         try:
-            orientation = _splash.current_orientation() if HAS_SPLASH_LIB else "landscape"
-            candidates = (
-                _splash.splash_candidates(self.app_name, orientation)
-                if HAS_SPLASH_LIB else ["splash.png"]
-            )
+            orientation = screen_orientation()
+            candidates = banner_candidates(self.app_name, orientation)
             found = False
             for name in candidates:
                 banner_url = (
@@ -2640,53 +2477,24 @@ def _handle_headless(argv) -> "int | None":
     return None
 
 
-def _build_startup_splash(window, package_path: str | None):
-    """Crea el splash dinámico de arranque para *window*, o ``None``.
+def _reveal_window(window, package_path: str | None = None):
+    """Muestra *window* con un splash integrado que se desvanece al dibujarse.
 
-    Sigue el plan de la Fase 2: evalúa la orientación de la pantalla, busca los
-    assets ``{app}-landscapeSplash.png`` / ``{app}-portraitSplash.png`` (o los
-    genéricos) dentro del paquete, y si no hay ninguno genera un marco
-    transparente con el icono centrado a ``512x512``. La transparencia se
-    rellena con el acento del SO.
+    El splash no usa assets: es una ventana del tamaño de *window*, con el fondo
+    del acento del SO y el icono del paquete (``app/app-icon.ico``) centrado. Si
+    no se puede construir (sin PyQt) la ventana se muestra directamente.
     """
     if not HAS_SPLASH_LIB or _splash is None:
-        return None
-    accent = getattr(window, "accent", DEFAULT_ACCENT)
-    app_name = getattr(window, "app_name", "") or ""
-    orientation = _splash.current_orientation()
-
-    icon_source = getattr(window, "package_icon", b"") or None
-    if package_path:
-        try:
-            with tempfile.TemporaryDirectory(prefix="Fluthin_splash_") as tmp:
-                if extract_archive(package_path, tmp):
-                    assets_dir = Path(tmp) / "assets"
-                    return _splash.build_splash_pixmap(
-                        _splash.find_splash_asset(assets_dir, app_name, orientation),
-                        orientation,
-                        accent,
-                        icon_source or (Path(tmp) / "app" / "app-icon.ico"),
-                    )
-        except Exception:
-            return None
-
-    return _splash.build_splash_pixmap(None, orientation, accent, icon_source)
-
-
-def _reveal_window(window, package_path: str | None = None):
-    """Muestra *window*, con un splash dinámico que se desvanece al dibujarse.
-
-    Si no se puede construir el splash (p. ej. sin PyQt o sin icono) la ventana
-    se muestra directamente, para no bloquear el flujo normal.
-    """
-    pixmap = _build_startup_splash(window, package_path)
-    if pixmap is None or pixmap.isNull():
         window.show()
         return
+    accent = getattr(window, "accent", DEFAULT_ACCENT)
+    icon_source = _splash.resolve_icon_source(window)
     try:
-        splash = _splash.SplashWindow(pixmap, getattr(window, "accent", DEFAULT_ACCENT))
-        splash.start()
+        splash = _splash.IntegratedSplash(
+            parent=window, icon_source=icon_source, accent=accent,
+        )
         splash.finish_when_ready(window)
+        splash.start()
     except Exception:
         window.show()
 

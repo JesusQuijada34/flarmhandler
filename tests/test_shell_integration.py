@@ -355,112 +355,111 @@ def test_mexf_plan_install_and_uninstall(tmp_path: Path):
     assert removed["removed"]
 
 
-# --- Fase 2: splash dinámico y Mica ----------------------------------------------
+# --- Fase 2: splash integrado (sin assets) y banner/Mica -----------------------
 
 
-def test_screen_orientation_classification():
-    from lib import splash_screen
-
-    assert splash_screen.screen_orientation(1920, 1080) == splash_screen.LANDSCAPE
-    assert splash_screen.screen_orientation(1080, 1920) == splash_screen.PORTRAIT
-    assert splash_screen.screen_orientation(1280, 1280) == splash_screen.SQUARE
+def test_orientation_for_classifies_screen():
+    assert flarmhandler._orientation_for(1920, 1080) == flarmhandler.LANDSCAPE
+    assert flarmhandler._orientation_for(1080, 1920) == flarmhandler.PORTRAIT
+    assert flarmhandler._orientation_for(1280, 1280) == flarmhandler.SQUARE
 
 
-def test_splash_candidates_prefer_orientation_specific_assets():
-    from lib import splash_screen
-
-    land = splash_screen.splash_candidates("suprr", splash_screen.LANDSCAPE)
+def test_banner_candidates_prefer_orientation_specific_assets():
+    land = flarmhandler.banner_candidates("suprr", flarmhandler.LANDSCAPE)
     assert land[0] == "suprr-landscapeSplash.png"
     assert "splash.png" in land
 
-    port = splash_screen.splash_candidates("suprr", splash_screen.PORTRAIT)
+    port = flarmhandler.banner_candidates("suprr", flarmhandler.PORTRAIT)
     assert port[0] == "suprr-portraitSplash.png"
-
-    # Pantalla cuadrada: ignora la restricción y admite cualquier asset.
-    square = splash_screen.splash_candidates("suprr", splash_screen.SQUARE)
-    assert "suprr-landscapeSplash.png" in square
-    assert "suprr-portraitSplash.png" in square
+    # En vertical se prefieren los assets "de setup" (más cuadrados).
+    assert port.index("splash_setup.png") < port.index("splash.png")
 
 
-def test_find_splash_asset_respects_orientation(tmp_path: Path):
-    from lib import splash_screen
-
+def test_find_banner_asset_respects_orientation(tmp_path: Path):
     assets = tmp_path / "assets"
     assets.mkdir()
     (assets / "suprr-landscapeSplash.png").write_bytes(_png_bytes())
     (assets / "suprr-portraitSplash.png").write_bytes(_png_bytes())
 
-    land = splash_screen.find_splash_asset(assets, "suprr", splash_screen.LANDSCAPE)
+    land = flarmhandler.find_banner_asset(assets, "suprr", flarmhandler.LANDSCAPE)
     assert land is not None and land.name == "suprr-landscapeSplash.png"
-    port = splash_screen.find_splash_asset(assets, "suprr", splash_screen.PORTRAIT)
+    port = flarmhandler.find_banner_asset(assets, "suprr", flarmhandler.PORTRAIT)
     assert port is not None and port.name == "suprr-portraitSplash.png"
 
-    # Sin assets no hay splash que mostrar (el llamador aplica Mica).
-    assert splash_screen.find_splash_asset(assets, "suprr", splash_screen.LANDSCAPE, has_assets=False) is None
+    # Sin assets no hay banner (el llamador aplica Mica).
+    assert flarmhandler.find_banner_asset(assets, "suprr", flarmhandler.LANDSCAPE, has_assets=False) is None
 
 
-def test_build_splash_pixmap_fills_frame_with_accent(tmp_path: Path):
+def test_splash_resolves_icon_from_package_header():
+    from lib import splash_screen
+
+    class Fake:
+        package_icon = b"\x89PNG\r\n"
+
+    assert splash_screen.resolve_icon_source(Fake()) == b"\x89PNG\r\n"
+
+
+def test_splash_resolves_icon_from_extracted_app_dir(tmp_path: Path):
+    from lib import splash_screen
+
+    app_dir = tmp_path / "app"
+    app_dir.mkdir()
+    (app_dir / "app-icon.ico").write_bytes(_png_bytes())
+
+    class Fake:
+        package_icon = b""
+        temp_extract_dir = tmp_path
+
+    resolved = splash_screen.resolve_icon_source(Fake())
+    assert resolved is not None and Path(resolved).name == "app-icon.ico"
+
+
+def test_splash_renders_centered_icon_without_assets(tmp_path: Path):
     _ensure_app()
     from lib import splash_screen
 
-    # Un asset totalmente transparente: todo el marco debe quedar del acento.
-    transparent = tmp_path / "suprr-landscapeSplash.png"
-    transparent.write_bytes(_png_transparent(8, 8))
+    icon = tmp_path / "app-icon.png"
+    icon.write_bytes(_png_bytes())
 
-    pix = splash_screen.build_splash_pixmap(transparent, splash_screen.LANDSCAPE, "#E81123")
+    pix = splash_screen.render_centered_icon(icon)
     assert pix is not None
-    width, height = splash_screen.standard_size_for(splash_screen.LANDSCAPE)
-    assert (pix.width(), pix.height()) == (width, height)
-    # La transparencia del asset se rellena con el acento del SO.
-    assert pix.toImage().pixelColor(0, 0).name() == "#e81123"
+    # El icono se escala manteniendo la relación de aspecto dentro de ICON_SIZE.
+    assert pix.width() <= splash_screen.ICON_SIZE
+    assert pix.height() <= splash_screen.ICON_SIZE
+
+    assert splash_screen.render_centered_icon(None) is None
+    assert splash_screen.render_centered_icon(tmp_path / "nope.ico") is None
 
 
-def test_standard_size_for_matches_plan_dimensions():
-    from lib import splash_screen
-
-    assert splash_screen.STANDARD_SIZES[splash_screen.LANDSCAPE] == (1366, 768)
-    assert splash_screen.STANDARD_SIZES[splash_screen.PORTRAIT] == (768, 1366)
-    assert splash_screen.STANDARD_SIZES[splash_screen.SQUARE] == (1280, 1280)
-    width, height = splash_screen.standard_size_for(splash_screen.LANDSCAPE)
-    assert width > 0 and height > 0
-
-
-def test_render_fallback_icon_centers_icon_at_512(tmp_path: Path):
+def test_integrated_splash_uses_accent_background(tmp_path: Path):
     _ensure_app()
     from lib import splash_screen
 
     icon = tmp_path / "app-icon.png"
     icon.write_bytes(_png_bytes())
 
-    pix = splash_screen.render_fallback_icon(icon, size=512, accent="#0078D4")
-    assert pix is not None and pix.width() == 512 and pix.height() == 512
-    # El fondo del marco es el acento (fuera del icono central y del redondeo).
-    assert pix.toImage().pixelColor(30, 30).name() == "#0078d4"
-    # Sin icono válido no hay splash de respaldo.
-    assert splash_screen.render_fallback_icon(None) is None
-    assert splash_screen.render_fallback_icon(tmp_path / "nope.ico") is None
-
-
-def test_build_splash_pixmap_falls_back_to_icon(tmp_path: Path):
-    _ensure_app()
-    from lib import splash_screen
-
-    icon = tmp_path / "app-icon.png"
-    icon.write_bytes(_png_bytes())
-    # Sin asset de splash pero con icono: se genera el marco 512x512.
-    pix = splash_screen.build_splash_pixmap(None, splash_screen.LANDSCAPE, "#0078D4", icon)
-    assert pix is not None and pix.width() == 512
-
-
-def test_install_window_applies_mica_without_assets():
-    _ensure_app()
-    # Un paquete local sin assets de splash debe activar el material Mica.
-    window = flarmhandler.InstallWindow(repo="suprr", owner="influent")
+    splash = splash_screen.IntegratedSplash(icon_source=icon, accent="#E81123")
     try:
-        window._apply_banner_asset(None, has_assets=False)
-        assert window.property("backdrop") == "mica"
+        assert "#E81123" in splash.styleSheet()
+        assert splash.icon_label.pixmap() is not None
+        # Al terminar inicia el desvanecido (idempotente) y se marca finalizado.
+        splash.finish()
+        assert splash._finished is True
     finally:
-        window.deleteLater()
+        splash.deleteLater()
+
+
+def test_integrated_splash_finish_is_idempotent():
+    _ensure_app()
+    from lib import splash_screen
+
+    splash = splash_screen.IntegratedSplash(icon_source=None, accent="#0078D4")
+    try:
+        splash.finish()
+        splash.finish()
+        assert splash._finished is True
+    finally:
+        splash.deleteLater()
 
 
 def test_install_window_prefers_orientation_banner(tmp_path: Path):

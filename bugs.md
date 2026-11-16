@@ -62,16 +62,19 @@ El nuevo instalador debe replicar fielmente la arquitectura visual y funcional d
     - *Sin assets disponibles:* Aplicar efecto Mica completo en toda la ventana.
 - [x] **Sistema de Splash Dinámico al Iniciar el Instalador:**
   - Adoptar el icono del paquete como icono de aplicación y de ventana.
-  - Evaluar resolución de pantalla y buscar assets específicos:
-    - Si `ancho > alto` y existe `assets/{appname}-landscapeSplash.png`: Abrir frame de splash integrado (reemplazando transparencia por el color de acento del SO).
-    - Si `ancho < alto` y existe `assets/{appname}-portraitSplash.png`: Mostrar dicho asset como splash vertical.
-    - Si es pantalla cúbica (`ancho == alto`): Ignorar restricción de orientación y usar cualquier asset de splash disponible.
-  - **Generación Manual por Defecto (Fallback):** Si no existen los archivos de splash anteriores, generar dinámicamente un marco completamente transparente con `app/app-icon.ico` centrado a un tamaño de `512x512 px`.
-  - **Dimensiones Estándar de Renderizado:**
-    - Horizontal: `1366 x 768`
-    - Vertical: `768 x 1366`
-    - Cúbico: `1280 x 1280`
-  - **Transición Suave:** Detectar el momento exacto en que la ventana principal ha sido dibujada y cargada exitosamente para ejecutar una animación de desvanecimiento (*fade-out*) del splash y revelar la interfaz.
+  - **Splash integrado sin assets (patrón `IntegratedSplash` de `packagemaker`,
+    commit `f15bfde`):** una ventana del **mismo tamaño que la ventana
+    principal**, con el **fondo del color de acento del SO** (leído del registro
+    de Windows en Windows; `gsettings` en GNOME) y el **icono del paquete**
+    (`app/app-icon.ico`) **centrado**. No se generan ni recortan assets.
+  - **Transición Suave:** detectar el momento exacto en que la ventana principal
+    se ha dibujado (primer `paintEvent`) para ejecutar el *fade-out* del splash
+    y revelar la interfaz; un temporizador actúa de red de seguridad.
+- [x] **Centralización de QSS (`source/qss/{qtcontrolid}.qss`):** un fichero por
+  control Qt (`qwidget`, `qpushbutton`, `qlabel`, `qlineedit`, `qscrollbar`,
+  `qmessagebox`, `qprogressbar`) como única fuente de estilos; `load_qss_parts()`
+  los ensambla y `build_global_qss()` inyecta el acento del SO. Reutilizable en la
+  Fase 3.
 
 ### Fase 3: Librería Global de Splashes e Inyección Bootloader (`packagemaker`)
 - [ ] **Librería Compartida (`lib/`):** Crear una librería global y compartida que genere y gestione estos splashes para cualquier proyecto compilado con `packagemaker`. Al compilar un proyecto `iflapp`, `packagemaker` debe copiar automáticamente los módulos necesarios a la carpeta `lib/` del proyecto.

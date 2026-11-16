@@ -1,20 +1,15 @@
 # -*- coding: utf-8 -*-
-"""Splash dinámico estilo UWP para instaladores y apps empaquetadas.
+"""Splash integrado estilo UWP para instaladores y apps empaquetadas.
+
+Sigue el patrón de ``IntegratedSplash`` de ``packagemaker`` (commit ``f15bfde``):
+el splash **no genera ningún asset**. Es una ventana del mismo tamaño que la
+ventana principal, con el color de fondo leído del registro de Windows (el
+acento del SO) y el icono del paquete (``app/app-icon.ico``) centrado. Al
+mostrarse la ventana principal, el splash se desvanece (*fade-out*).
 
 La lógica vive aquí (y no dentro de ``flarmhandler.py``) porque es la misma que
 necesita la Fase 3 del plan maestro: ``packagemaker`` copiará este módulo a la
 carpeta ``lib/`` de los proyectos ``iflapp`` y lo inyectará como *bootloader*.
-
-Reglas del plan (``bugs.md``, Fase 2):
-
-* Se evalúa la orientación de la pantalla: ``landscape`` (ancho > alto),
-  ``portrait`` (ancho < alto) y ``square`` (ancho == alto).
-* ``landscape`` prefiere ``{app}-landscapeSplash.png``; ``portrait`` prefiere
-  ``{app}-portraitSplash.png``. En pantalla cuadrada vale cualquier asset.
-* Si no hay asset específico se usa un splash genérico; si tampoco lo hay, se
-  genera un marco transparente con el icono centrado a ``512x512``.
-* La transparencia del asset se rellena con el color de acento del SO.
-* Al mostrar la ventana principal, el splash se desvanece (*fade-out*).
 
 Sin ``PyQt6`` el módulo importa igual (``HAS_QT`` es ``False``) para que el
 resto del instalador no dependa de la GUI.
@@ -34,88 +29,27 @@ except Exception:  # pragma: no cover - entorno sin PyQt6
     HAS_QT = False
 
 DEFAULT_ACCENT = "#0078D4"
-DEFAULT_ICON = "assets/product_logo.png"
-
-LANDSCAPE = "landscape"
-PORTRAIT = "portrait"
-SQUARE = "square"
-
-# Dimensiones estándar de renderizado que fija el plan maestro.
-STANDARD_SIZES = {
-    LANDSCAPE: (1366, 768),
-    PORTRAIT: (768, 1366),
-    SQUARE: (1280, 1280),
-}
-
-FADE_DURATION_MS = 450
-# Tamaño del icono del splash de respaldo (marco transparente).
-FALLBACK_ICON_SIZE = 512
+DEFAULT_ICON = "app/app-icon.ico"
+ICON_SIZE = 180
+FADE_DURATION_MS = 600
+DEFAULT_DURATION_MS = 5000
 
 
-def screen_orientation(width: int, height: int) -> str:
-    """Clasifica una pantalla en ``landscape`` / ``portrait`` / ``square``."""
-    if width > height:
-        return LANDSCAPE
-    if width < height:
-        return PORTRAIT
-    return SQUARE
+def resolve_icon_source(window) -> Optional[object]:
+    """Icono del paquete a mostrar en el splash (bytes o ruta), o ``None``.
 
-
-def current_orientation() -> str:
-    """Orientación de la pantalla principal (``landscape`` por defecto)."""
-    if not HAS_QT:
-        return LANDSCAPE
-    screen = QtWidgets.QApplication.primaryScreen()
-    if screen is None:
-        return LANDSCAPE
-    geometry = screen.geometry()
-    return screen_orientation(geometry.width(), geometry.height())
-
-
-def splash_candidates(app_name: str, orientation: str) -> list[str]:
-    """Nombres de asset que se intentan, del más específico al más genérico.
-
-    En pantalla cuadrada se ignora la restricción de orientación (cualquier
-    asset vale), así que se listan ambos y luego los genéricos.
+    Prioriza el icono de la cabecera del contenedor (``package_icon``) y, si no,
+    busca ``app/app-icon.ico`` / ``app/app-icon.png`` dentro del paquete extraído.
     """
-    app = (app_name or "").strip()
-    specific = []
-    if orientation == LANDSCAPE:
-        specific = [f"{app}-landscapeSplash.png"]
-    elif orientation == PORTRAIT:
-        specific = [f"{app}-portraitSplash.png"]
-    else:  # square: sin restricción de orientación
-        specific = [f"{app}-landscapeSplash.png", f"{app}-portraitSplash.png"]
-
-    generic = ["splash.png", "splash_setup.png"]
-    seen = set()
-    ordered = []
-    for name in specific + generic:
-        if name and name not in seen:
-            seen.add(name)
-            ordered.append(name)
-    return ordered
-
-
-def find_splash_asset(
-    assets_dir: Path | str,
-    app_name: str,
-    orientation: str,
-    has_assets: bool = True,
-) -> Optional[Path]:
-    """Primer asset de splash existente en *assets_dir* (o ``None``).
-
-    ``has_assets`` permite distinguir "carpeta sin assets" de "assets sin
-    splash": en ambos casos no hay splash que mostrar, pero el llamador usa el
-    dato para decidir entre Mica completo o un banner normal.
-    """
-    if not has_assets:
-        return None
-    assets_dir = Path(assets_dir)
-    for name in splash_candidates(app_name, orientation):
-        candidate = assets_dir / name
-        if candidate.is_file():
-            return candidate
+    icon = getattr(window, "package_icon", b"") or None
+    if icon:
+        return icon
+    extract_dir = getattr(window, "temp_extract_dir", None)
+    if extract_dir:
+        for name in ("app-icon.ico", "app-icon.png"):
+            candidate = Path(extract_dir) / "app" / name
+            if candidate.is_file():
+                return candidate
     return None
 
 
@@ -137,210 +71,146 @@ def _load_icon_pixmap(icon_source):
     return None if pixmap.isNull() else pixmap
 
 
-def render_fallback_icon(
-    icon_source,
-    size: int = FALLBACK_ICON_SIZE,
-    accent: str = DEFAULT_ACCENT,
-):
-    """Marco transparente con el icono centrado a *size* px.
-
-    Se usa cuando no hay ningún asset de splash. *icon_source* puede ser una
-    ruta, los bytes del icono (p. ej. la cabecera del contenedor) o un
-    ``QPixmap``. Devuelve ``None`` si no hay icono válido.
-    """
+def render_centered_icon(icon_source, size: int = ICON_SIZE):
+    """Pixmap del icono escalado a *size* px, o ``None`` si no es válido."""
     if not HAS_QT:
         return None
     source = _load_icon_pixmap(icon_source)
     if source is None:
         return None
-
-    canvas = QtGui.QPixmap(size, size)
-    canvas.fill(QtCore.Qt.GlobalColor.transparent)
-    painter = QtGui.QPainter(canvas)
-    painter.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing)
-    painter.setRenderHint(QtGui.QPainter.RenderHint.SmoothPixmapTransform)
-
-    # Fondo de acento con esquinas suaves (geometría UWP), igual que el icono
-    # de la cabecera del instalador.
-    painter.setPen(QtCore.Qt.PenStyle.NoPen)
-    painter.setBrush(QtGui.QColor(accent))
-    painter.drawRoundedRect(0, 0, size, size, 24, 24)
-
-    target = int(size * 0.6)
-    scaled = source.scaled(
-        target,
-        target,
+    return source.scaled(
+        size, size,
         QtCore.Qt.AspectRatioMode.KeepAspectRatio,
         QtCore.Qt.TransformationMode.SmoothTransformation,
     )
-    painter.drawPixmap(
-        (size - scaled.width()) // 2,
-        (size - scaled.height()) // 2,
-        scaled,
-    )
-    painter.end()
-    return canvas
 
 
-def standard_size_for(orientation: str) -> tuple[int, int]:
-    """Tamaño de renderizado estándar de la orientación, recortado a la pantalla.
+if HAS_QT:
 
-    El plan fija ``1366x768`` (horizontal), ``768x1366`` (vertical) y
-    ``1280x1280`` (cúbico); si la pantalla es más pequeña se usa su tamaño para
-    que el splash nunca exceda el área visible.
-    """
-    size = STANDARD_SIZES.get(orientation, STANDARD_SIZES[LANDSCAPE])
-    if HAS_QT:
-        screen = QtWidgets.QApplication.primaryScreen()
-        if screen is not None:
-            geo = screen.geometry()
-            return (max(min(size[0], geo.width()), 320), max(min(size[1], geo.height()), 240))
-    return size
+    class IntegratedSplash(QtWidgets.QWidget):
+        """Splash a pantalla completa sobre la ventana principal (sin assets).
 
-
-def _fit_asset_to_frame(pixmap, orientation: str, accent: str):
-    """Escala el asset al marco estándar y rellena el resto con el acento."""
-    width, height = standard_size_for(orientation)
-    scaled = pixmap.scaled(
-        width, height,
-        QtCore.Qt.AspectRatioMode.KeepAspectRatio,
-        QtCore.Qt.TransformationMode.SmoothTransformation,
-    )
-    canvas = QtGui.QPixmap(width, height)
-    canvas.fill(QtGui.QColor(accent))
-    painter = QtGui.QPainter(canvas)
-    painter.setRenderHint(QtGui.QPainter.RenderHint.SmoothPixmapTransform)
-    painter.drawPixmap((width - scaled.width()) // 2, (height - scaled.height()) // 2, scaled)
-    painter.end()
-    return canvas
-
-
-def build_splash_pixmap(
-    asset_path: Path | str | None,
-    orientation: str,
-    accent: str = DEFAULT_ACCENT,
-    icon_source=None,
-):
-    """Pixmap del splash a mostrar, o ``None`` si no hay nada que renderizar.
-
-    Prioriza el asset: se escala al marco estándar de la orientación y su
-    transparencia/letterbox se rellena con el acento del SO. Si no hay asset,
-    cae al marco transparente con el icono centrado a ``512x512``.
-    """
-    if not HAS_QT:
-        return None
-    if asset_path:
-        pixmap = QtGui.QPixmap(str(asset_path))
-        if not pixmap.isNull():
-            return _fit_asset_to_frame(pixmap, orientation, accent)
-    return render_fallback_icon(icon_source, FALLBACK_ICON_SIZE, accent)
-
-
-def center_on_screen(widget) -> None:
-    """Centra *widget* en la pantalla principal (sin depender del padre)."""
-    if not HAS_QT:
-        return
-    screen = QtWidgets.QApplication.primaryScreen()
-    if screen is None:
-        return
-    geo = screen.geometry()
-    widget.move(
-        geo.center().x() - widget.width() // 2,
-        geo.center().y() - widget.height() // 2,
-    )
-
-
-class SplashWindow(QtWidgets.QWidget if HAS_QT else object):
-    """Ventana de splash sin marco que se desvanece al revelar la app."""
-
-    def __init__(self, pixmap, accent: str = DEFAULT_ACCENT, parent=None):
-        if not HAS_QT:
-            raise RuntimeError("PyQt6 no disponible para SplashWindow")
-        super().__init__(parent)
-        self.setWindowFlags(
-            QtCore.Qt.WindowType.FramelessWindowHint
-            | QtCore.Qt.WindowType.WindowStaysOnTopHint
-            | QtCore.Qt.WindowType.Tool
-        )
-        self.setAttribute(QtCore.Qt.WidgetAttribute.WA_TranslucentBackground, True)
-        self._accent = accent
-        self._finished = False
-
-        self._label = QtWidgets.QLabel(self)
-        self._label.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
-        self._label.setPixmap(pixmap)
-
-        layout = QtWidgets.QVBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.addWidget(self._label)
-
-        self.setFixedSize(pixmap.size())
-
-        self._fade = QtCore.QPropertyAnimation(self, b"windowOpacity")
-        self._fade.setDuration(FADE_DURATION_MS)
-        self._fade.setStartValue(1.0)
-        self._fade.setEndValue(0.0)
-        self._fade.setEasingCurve(QtCore.QEasingCurve.Type.InOutQuad)
-        self._fade.finished.connect(self._on_faded)
-
-    def start(self):
-        """Muestra el splash centrado y opaco."""
-        self.setWindowOpacity(1.0)
-        self.show()
-        center_on_screen(self)
-        self.raise_()
-
-    def finish_when_ready(self, target, timeout_ms: int = 4000):
-        """Desvanece el splash en cuanto *target* se dibuja por primera vez.
-
-        El plan pide detectar el momento exacto en que la ventana principal ha
-        sido dibujada. Se conecta al primer ``paintEvent`` (se desconecta tras
-        usarlo) con un temporizador de seguridad: si la ventana nunca llega a
-        pintarse, el splash se retira igualmente para no quedar en pantalla.
+        Es una ventana sin marco, del mismo tamaño que *parent*, con el fondo
+        del color de acento del SO y el icono del paquete centrado. Se desvanece
+        al terminar (por el temporizador o al dibujarse la ventana principal) y
+        emite ``finished``.
         """
-        if self._finished:
-            return
-        self._target = target
-        # La ventana se muestra ya (el splash queda encima, con
-        # ``WindowStaysOnTopHint``) para que llegue a pintarse; en cuanto lo
-        # haga, el filtro dispara el desvanecido. El temporizador es la red de
-        # seguridad si nunca se pinta.
-        try:
-            target.show()
-        except Exception:
-            pass
-        target.installEventFilter(self)
-        QtCore.QTimer.singleShot(timeout_ms, self.finish)
 
-    def eventFilter(self, obj, event):
-        if event.type() == QtCore.QEvent.Type.Paint and not self._finished:
-            try:
-                obj.removeEventFilter(self)
-            except Exception:
-                pass
-            self.finish()
-        return super().eventFilter(obj, event)
+        finished = QtCore.pyqtSignal()
 
-    def finish(self, target=None):
-        """Desvanece el splash; opcionalmente revela *target* al terminar.
+        def __init__(self, parent=None, icon_source=None,
+                     accent: str = DEFAULT_ACCENT, title: str = ""):
+            super().__init__(parent)
+            self._parent = parent
+            self._finished = False
+            self.setWindowFlags(
+                QtCore.Qt.WindowType.FramelessWindowHint
+                | QtCore.Qt.WindowType.WindowStaysOnTopHint
+            )
+            if parent is not None:
+                self._sync_to_parent()
 
-        Es idempotente: llamarlo dos veces (p. ej. por un temporizador y por el
-        evento de ventana dibujada) no reinicia la animación.
-        """
-        if self._finished:
-            return
-        self._finished = True
-        if target is not None:
-            self._target = target
-        self._fade.start()
+            self.setStyleSheet(
+                f"#SplashContainer {{ background-color: {accent}; }}"
+            )
 
-    def _on_faded(self):
-        target = getattr(self, "_target", None)
-        if target is not None:
+            container = QtWidgets.QWidget(self)
+            container.setObjectName("SplashContainer")
+            container.setGeometry(0, 0, self.width(), self.height())
+
+            layout = QtWidgets.QVBoxLayout(container)
+            layout.setContentsMargins(0, 0, 0, 0)
+            layout.setSpacing(0)
+            layout.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
+            layout.addStretch()
+
+            self.icon_label = QtWidgets.QLabel()
+            self.icon_label.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
+            self.icon_label.setStyleSheet("background: transparent;")
+            pixmap = render_centered_icon(icon_source)
+            if pixmap is not None:
+                self.icon_label.setPixmap(pixmap)
+            layout.addWidget(self.icon_label)
+            layout.addStretch()
+
+            self._timer = QtCore.QTimer(self)
+            self._timer.setSingleShot(True)
+            self._timer.timeout.connect(self.finish)
+
+            self._fade = QtCore.QPropertyAnimation(self, b"windowOpacity")
+            self._fade.setDuration(FADE_DURATION_MS)
+            self._fade.setStartValue(1.0)
+            self._fade.setEndValue(0.0)
+            self._fade.setEasingCurve(QtCore.QEasingCurve.Type.OutCubic)
+            self._fade.finished.connect(self._on_faded)
+
+        def _sync_to_parent(self):
+            """Coloca el splash sobre el área visible de la ventana principal."""
+            if self._parent is None:
+                return
+            top_left = self._parent.mapToGlobal(QtCore.QPoint(0, 0))
+            self.setGeometry(
+                top_left.x(), top_left.y(),
+                self._parent.width(), self._parent.height(),
+            )
+
+        def resizeEvent(self, event):
+            super().resizeEvent(event)
+            self._sync_to_parent()
+            container = self.findChild(QtWidgets.QWidget, "SplashContainer")
+            if container is not None:
+                container.setGeometry(0, 0, self.width(), self.height())
+
+        def start(self, duration_ms: int = DEFAULT_DURATION_MS):
+            """Muestra el splash y programa el desvanecido."""
+            self.setWindowOpacity(1.0)
+            self._sync_to_parent()
+            self.show()
+            self.raise_()
+            self._timer.start(duration_ms)
+
+        def finish_when_ready(self, target, timeout_ms: int = DEFAULT_DURATION_MS):
+            """Desvanece el splash en cuanto *target* se dibuja por primera vez.
+
+            La ventana principal se muestra ya (el splash queda encima) para que
+            llegue a pintarse; al primer ``paintEvent`` se retira el splash. El
+            temporizador actúa de red de seguridad si nunca se pinta.
+            """
+            if self._finished:
+                return
             try:
                 target.show()
-                target.raise_()
-                target.activateWindow()
             except Exception:
                 pass
-        self.close()
+            target.installEventFilter(self)
+            self._timer.start(timeout_ms)
+
+        def eventFilter(self, obj, event):
+            if event.type() == QtCore.QEvent.Type.Paint and not self._finished:
+                try:
+                    obj.removeEventFilter(self)
+                except Exception:
+                    pass
+                self.finish()
+            return super().eventFilter(obj, event)
+
+        def finish(self):
+            """Inicia el desvanecido (idempotente)."""
+            if self._finished:
+                return
+            self._finished = True
+            self._timer.stop()
+            self._fade.start()
+
+        def _on_faded(self):
+            self.hide()
+            self.finished.emit()
+            self.close()
+
+else:  # pragma: no cover - entorno sin PyQt6
+
+    class IntegratedSplash:  # type: ignore[no-redef]
+        """Respaldo sin Qt: no hace nada (el instalador degrada sin GUI)."""
+
+        def __init__(self, *args, **kwargs):
+            raise RuntimeError("PyQt6 no disponible para IntegratedSplash")

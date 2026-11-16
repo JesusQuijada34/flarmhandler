@@ -1,0 +1,24 @@
+/* Entradas de texto. El acento del SO entra por {accent}. */
+
+QLineEdit, QTextEdit {
+    background: #FFFFFF;
+    border: 1px solid #D6D6D6;
+    border-radius: 4px;
+    padding: 8px;
+    selection-background-color: {accent};
+    selection-color: #FFFFFF;
+}
+QLineEdit:focus, QTextEdit:focus {
+    border: 2px solid {accent};
+    padding: 7px;
+}
+
+/* Registro de instalación (panel oscuro monoespaciado) */
+#LogArea {
+    background-color: #1F1F1F;
+    color: #E8E8E8;
+    font-family: "Cascadia Mono", "Consolas", monospace;
+    font-size: 12px;
+    border: none;
+    border-radius: 4px;
+}
