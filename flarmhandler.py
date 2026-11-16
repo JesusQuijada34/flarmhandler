@@ -41,6 +41,24 @@ except Exception as _pkg_exc:  # pragma: no cover - entorno incompleto
     HAS_PACKAGE_LIBS = False
     _PACKAGE_LIBS_ERROR = str(_pkg_exc)
 
+# --- Splash dinámico (Fase 2 del plan maestro) ---
+# La lógica de orientación/assets/fade-out vive en ``lib/splash_screen`` para
+# poder reutilizarla como librería global (Fase 3, inyección bootloader).
+try:
+    from lib import splash_screen as _splash
+    HAS_SPLASH_LIB = True
+except Exception:  # pragma: no cover - entorno incompleto
+    _splash = None
+    HAS_SPLASH_LIB = False
+
+# --- Efecto Mica (leviathan-ui, opcional) ---
+try:
+    from leviathan_ui import WipeWindow as _WipeWindow
+    HAS_WIPE_WINDOW = True
+except Exception:  # pragma: no cover - leviathan-ui ausente
+    _WipeWindow = None
+    HAS_WIPE_WINDOW = False
+
 # --- Try to import PyQt5-Markdown widgets ---
 try:
     from PyQt5.QtWebEngineWidgets import QWebEngineView
@@ -76,7 +94,6 @@ DEFAULT_SPLASH = "assets/splash.png"
 DEFAULT_ICON = "assets/product_logo.png"
 SPLASH_SETUP = "assets/splash_setup.png"
 
-GITHUB_RAW_TEMPLATE = "https://raw.githubusercontent.com/{owner}/{repo}/main/assets/splash.png"
 GITHUB_RELEASES_API = "https://api.github.com/repos/{owner}/{repo}/releases"
 SCHEME = "Fluthinstore"
 MIMETYPE = "application/x-Fluthinstore"
@@ -400,6 +417,18 @@ QPushButton#DangerBtn:hover {
     font-size: 12px;
     border: none;
     border-radius: 4px;
+}
+
+/* Fondo Mica (cuando el paquete no trae assets de splash): las áreas de la
+   ventana se vuelven translúcidas para que se vea el material del SO detrás. */
+#InstallWindow[backdrop="mica"],
+#InstallWindow[backdrop="mica"] #HeaderArea,
+#InstallWindow[backdrop="mica"] #FooterArea,
+#InstallWindow[backdrop="mica"] #ContentArea {
+    background-color: transparent;
+}
+#InstallWindow[backdrop="mica"] #StatusPanel {
+    background-color: rgba(251, 251, 251, 0.72);
 }
 """
 
@@ -1462,6 +1491,12 @@ class BlurredBanner(QtWidgets.QWidget):
         self.setVisible(True)
         self.update_images()
 
+    def set_accent(self, accent: str) -> None:
+        """Color con el que se rellena el fondo difuminado del banner."""
+        self._accent = accent
+        if getattr(self, "_original_pixmap", None) is not None:
+            self.update_images()
+
     def resizeEvent(self, event):
         self.update_images()
         super().resizeEvent(event)
@@ -1517,9 +1552,17 @@ class BlurredBanner(QtWidgets.QWidget):
             cx = (cover_pix.width() - w) // 2
             cy = (cover_pix.height() - h) // 2
             bg_cropped = cover_pix.copy(cx, cy, w, h)
-            
+
+            # Compose over the accent before blurring so a transparent
+            # splash does not reveal the white window behind.
+            canvas = QtGui.QPixmap(bg_cropped.size())
+            canvas.fill(QtGui.QColor(getattr(self, "_accent", DEFAULT_ACCENT)))
+            painter = QtGui.QPainter(canvas)
+            painter.drawPixmap(0, 0, bg_cropped)
+            painter.end()
+
             # Blur
-            small = bg_cropped.scaled(
+            small = canvas.scaled(
                 20, 20,
                 QtCore.Qt.AspectRatioMode.IgnoreAspectRatio,
                 QtCore.Qt.TransformationMode.SmoothTransformation,
@@ -1653,6 +1696,7 @@ class InstallWindow(QtWidgets.QWidget):
             self.installed_path = find_installed_path(owner, repo)
 
         #self.setWindowFlags(QtCore.Qt.FramelessWindowHint)
+        self.setObjectName("InstallWindow")
         self.resize(1000, 650)
         
         # Main Layout
@@ -1667,6 +1711,7 @@ class InstallWindow(QtWidgets.QWidget):
         
         # Banner Image
         self.banner = BlurredBanner()
+        self.banner.set_accent(self.accent)
         self.main_layout.addWidget(self.banner)
         
         # Cabecera estilo UWP: texto a la izquierda, icono en la esquina superior
@@ -1711,6 +1756,7 @@ class InstallWindow(QtWidgets.QWidget):
         
         # Content Area (Split)
         content = QtWidgets.QWidget()
+        content.setObjectName("ContentArea")
         c_layout = QtWidgets.QHBoxLayout(content)
         c_layout.setContentsMargins(30, 20, 30, 20)
         c_layout.setSpacing(30)
@@ -1911,6 +1957,7 @@ class InstallWindow(QtWidgets.QWidget):
         pix = render_app_icon(data, size=96, accent=self.accent) if data else None
         if pix is not None:
             self.icon_label.setPixmap(pix)
+            self._apply_window_icon(data)
             return
         initials = "".join(part[:1] for part in re.split(r"[\s._-]+", self.app_name) if part)[:2].upper()
         self.icon_label.setText(initials or "?")
@@ -1918,6 +1965,60 @@ class InstallWindow(QtWidgets.QWidget):
             f"#AppIcon {{ background-color: {self.accent}; border-radius: 6px;"
             f" color: #FFFFFF; font-size: 34px; font-weight: 600; }}"
         )
+
+    def _apply_window_icon(self, data: bytes | None):
+        """Adopta el icono del paquete como icono de la ventana y de la app."""
+        if not data:
+            return
+        pixmap = QtGui.QPixmap()
+        if not pixmap.loadFromData(data):
+            return
+        icon = QtGui.QIcon(pixmap)
+        self.setWindowIcon(icon)
+        app = QtWidgets.QApplication.instance()
+        if app is not None:
+            app.setWindowIcon(icon)
+
+    def _apply_mica(self):
+        """Aplica el material Mica del SO al fondo de la ventana (si hay soporte).
+
+        Se usa cuando el paquete no trae assets de splash: el plan pide entonces
+        "efecto Mica completo en toda la ventana". La propiedad ``backdrop``
+        activa las reglas QSS translúcidas; ``WipeWindow`` aporta el material.
+        """
+        self.setProperty("backdrop", "mica")
+        self.style().unpolish(self)
+        self.style().polish(self)
+        if not HAS_WIPE_WINDOW or _WipeWindow is None:
+            return
+        try:
+            self.window_effects = (
+                _WipeWindow.create().set_mode("polished").set_radius(8).set_blur(0).apply(self)
+            )
+        except Exception:
+            pass
+
+    def _apply_banner_asset(self, assets_dir: Path | None, has_assets: bool):
+        """Elige el splash de cabecera según la orientación de la pantalla.
+
+        Horizontal → ``splash.png``; vertical → ``splash_setup.png``; sin assets
+        → Mica completo. Delega en ``lib/splash_screen`` para compartir la
+        lógica con la librería global de splashes (Fase 3).
+        """
+        if not HAS_SPLASH_LIB or _splash is None:
+            return
+        orientation = _splash.current_orientation()
+        asset = (
+            _splash.find_splash_asset(assets_dir, self.app_name, orientation, has_assets)
+            if assets_dir else None
+        )
+        if asset is None:
+            if not has_assets or assets_dir is None:
+                self._apply_mica()
+            return
+        pixmap = QtGui.QPixmap(str(asset))
+        if not pixmap.isNull():
+            self.banner.setPixmap(pixmap)
 
     def load_local_assets_to_ui(self):
         """Carga el icono y el banner del paquete en la interfaz.
@@ -1941,11 +2042,10 @@ class InstallWindow(QtWidgets.QWidget):
             if icon_path.exists():
                 self._set_icon_pixmap(icon_path.read_bytes())
 
-        # Banner
-        banner_path = self.temp_extract_dir / "assets" / "splash.png"
-        if banner_path.exists():
-            pix = QtGui.QPixmap(str(banner_path))
-            self.banner.setPixmap(pix)
+        # Banner: splash de cabecera según orientación (o Mica si no hay assets).
+        assets_dir = self.temp_extract_dir / "assets"
+        has_assets = assets_dir.is_dir() and any(assets_dir.iterdir())
+        self._apply_banner_asset(assets_dir, has_assets)
 
     def closeEvent(self, event):
         # Cleanup temp dir
@@ -2027,14 +2127,28 @@ class InstallWindow(QtWidgets.QWidget):
         except Exception:
             pass
 
-        # Banner
+        # Banner: se prueban los assets de splash por orientación (igual que en
+        # el flujo local). Si ninguno existe, se aplica Mica a toda la ventana.
         try:
-            banner_url = GITHUB_RAW_TEMPLATE.format(owner=self.owner, repo=self.repo)
-            r = requests.get(banner_url, timeout=5)
-            if r.ok:
-                pix = QtGui.QPixmap()
-                pix.loadFromData(r.content)
-                self.banner.setPixmap(pix)
+            orientation = _splash.current_orientation() if HAS_SPLASH_LIB else "landscape"
+            candidates = (
+                _splash.splash_candidates(self.app_name, orientation)
+                if HAS_SPLASH_LIB else ["splash.png"]
+            )
+            found = False
+            for name in candidates:
+                banner_url = (
+                    f"https://raw.githubusercontent.com/{self.owner}/{self.repo}/main/assets/{name}"
+                )
+                r = requests.get(banner_url, timeout=5)
+                if r.ok:
+                    pix = QtGui.QPixmap()
+                    if pix.loadFromData(r.content):
+                        self.banner.setPixmap(pix)
+                        found = True
+                        break
+            if not found:
+                self._apply_mica()
         except Exception:
             pass
 
@@ -2398,7 +2512,7 @@ def handle_iflapp_file(file_path: str):
 
         # Open unified InstallWindow
         w = InstallWindow(repo="", owner="", local_file_path=file_path)
-        w.show()
+        _reveal_window(w, file_path)
         return w
 
     except Exception as e:
@@ -2526,6 +2640,57 @@ def _handle_headless(argv) -> "int | None":
     return None
 
 
+def _build_startup_splash(window, package_path: str | None):
+    """Crea el splash dinámico de arranque para *window*, o ``None``.
+
+    Sigue el plan de la Fase 2: evalúa la orientación de la pantalla, busca los
+    assets ``{app}-landscapeSplash.png`` / ``{app}-portraitSplash.png`` (o los
+    genéricos) dentro del paquete, y si no hay ninguno genera un marco
+    transparente con el icono centrado a ``512x512``. La transparencia se
+    rellena con el acento del SO.
+    """
+    if not HAS_SPLASH_LIB or _splash is None:
+        return None
+    accent = getattr(window, "accent", DEFAULT_ACCENT)
+    app_name = getattr(window, "app_name", "") or ""
+    orientation = _splash.current_orientation()
+
+    icon_source = getattr(window, "package_icon", b"") or None
+    if package_path:
+        try:
+            with tempfile.TemporaryDirectory(prefix="Fluthin_splash_") as tmp:
+                if extract_archive(package_path, tmp):
+                    assets_dir = Path(tmp) / "assets"
+                    return _splash.build_splash_pixmap(
+                        _splash.find_splash_asset(assets_dir, app_name, orientation),
+                        orientation,
+                        accent,
+                        icon_source or (Path(tmp) / "app" / "app-icon.ico"),
+                    )
+        except Exception:
+            return None
+
+    return _splash.build_splash_pixmap(None, orientation, accent, icon_source)
+
+
+def _reveal_window(window, package_path: str | None = None):
+    """Muestra *window*, con un splash dinámico que se desvanece al dibujarse.
+
+    Si no se puede construir el splash (p. ej. sin PyQt o sin icono) la ventana
+    se muestra directamente, para no bloquear el flujo normal.
+    """
+    pixmap = _build_startup_splash(window, package_path)
+    if pixmap is None or pixmap.isNull():
+        window.show()
+        return
+    try:
+        splash = _splash.SplashWindow(pixmap, getattr(window, "accent", DEFAULT_ACCENT))
+        splash.start()
+        splash.finish_when_ready(window)
+    except Exception:
+        window.show()
+
+
 def main(argv):
     python_path = sys.executable
     script_path = os.path.abspath(argv[0])
@@ -2563,7 +2728,7 @@ def main(argv):
             try:
                 repo, owner = parse_Fluthin_url(url)
                 w = InstallWindow(repo, owner)
-                w.show()
+                _reveal_window(w)
             except Exception as e:
                 QtWidgets.QMessageBox.critical(None, "Error", f"URL inválida: {e}")
                 return 1
@@ -2599,7 +2764,7 @@ def main(argv):
                 try:
                     repo, owner = parse_Fluthin_url(arg)
                     w = InstallWindow(repo, owner)
-                    w.show()
+                    _reveal_window(w)
                 except Exception as e:
                     QtWidgets.QMessageBox.critical(None, "Error", f"URL inválida: {e}")
                     return 1
@@ -2611,7 +2776,7 @@ def main(argv):
                     try:
                         repo, owner = parse_Fluthin_url(text)
                         w = InstallWindow(repo, owner)
-                        w.show()
+                        _reveal_window(w)
                     except Exception as e:
                         QtWidgets.QMessageBox.critical(None, "Error", f"URL inválida: {e}")
                         return 1

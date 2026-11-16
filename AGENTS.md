@@ -23,6 +23,19 @@ Repo: `https://github.com/JesusQuijada34/flarmhandler.git`, rama de trabajo `mai
 - `lib/` porta el ecosistema Fluthin: `iflapp_format` (contenedor v2),
   `asksome_format`, `mexf_*`, `native_shell`, `package_shell`, `safe_zip`.
   `HAS_PACKAGE_LIBS` es `False` si faltan; el handler degrada sin ellos.
+- `lib/splash_screen.py` — splash dinámico estilo UWP (Fase 2). Clasifica la
+  pantalla en `landscape`/`portrait`/`square`, busca los assets
+  `{app}-landscapeSplash.png`/`{app}-portraitSplash.png` (o los genéricos
+  `splash.png`/`splash_setup.png`), rellena su transparencia con el acento del
+  SO y, si no hay ninguno, genera un marco transparente con el icono centrado a
+  `512x512`. `SplashWindow.finish_when_ready(target)` desvanece el splash en el
+  primer `paintEvent` de la ventana (con temporizador de seguridad). Se mantiene
+  fuera de `flarmhandler.py` porque la Fase 3 lo copia a la `lib/` de los
+  proyectos `iflapp` como *bootloader*.
+- `InstallWindow._apply_banner_asset(assets_dir, has_assets)` elige el splash de
+  cabecera por orientación; sin assets aplica **Mica** (`_apply_mica`: propiedad
+  `backdrop="mica"` + `WipeWindow` de `leviathan_ui`, ambos opcionales). El flujo
+  online prueba los mismos candidatos vía GitHub raw y cae a Mica si no hay.
 - `read_package_identity()` lee la cabecera sin descifrar y devuelve las mismas
   claves que `parse_details_xml` (`name`, `publisher`, `app`, `version`,
   `platform`, `author`), así el flujo no distingue v2 / asksome / ZIP.
@@ -74,6 +87,7 @@ Repo: `https://github.com/JesusQuijada34/flarmhandler.git`, rama de trabajo `mai
 
 ## Plan maestro
 `bugs.md` es la hoja de ruta de 3 fases. Fase 1 (bugs críticos del instalador)
-completada: permisos, detección de plataforma/assets y QSS UWP. Fases 2 (banner
-borroso, Mica, splashes dinámicos) y 3 (librería global de splashes e inyección
-bootloader en `packagemaker`) pendientes.
+completada: permisos, detección de plataforma/assets y QSS UWP. Fase 2 (banner
+borroso por orientación, Mica y splash dinámico con fade-out) completada.
+Fase 3 (librería global de splashes e inyección *bootloader* en `packagemaker`)
+pendiente.

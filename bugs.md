@@ -54,13 +54,13 @@ El nuevo instalador debe replicar fielmente la arquitectura visual y funcional d
 - [x] **Actualización de Hojas de Estilo (QSS):** Actualizar los archivos `.qss` tanto en `packagemaker` como en `flarmhandler` para implementar la geometría UWP, controles dinámicos con el color de acento del SO y estados de botones (activo, hover, deshabilitado).
 
 ### Fase 2: Fondos Dinámicos, Mica y Arquitectura de Splashes
-- [ ] **Banner Borroso y Efecto Mica:**
+- [x] **Banner Borroso y Efecto Mica:**
   - Sustituir el fondo sólido de la ventana por un banner superior difuminado (*blur*) utilizando `assets/splash.png` como contenedor de cabecera, aplicando efecto **Mica** en el resto inferior de la ventana.
   - **Detección de Orientación de Pantalla:**
     - *Horizontal* (`ancho > alto`): Usar `assets/splash.png` difuminado.
     - *Vertical* (`ancho < alto`): Mostrar `assets/splash_setup.png` centrado y difuminado.
     - *Sin assets disponibles:* Aplicar efecto Mica completo en toda la ventana.
-- [ ] **Sistema de Splash Dinámico al Iniciar el Instalador:**
+- [x] **Sistema de Splash Dinámico al Iniciar el Instalador:**
   - Adoptar el icono del paquete como icono de aplicación y de ventana.
   - Evaluar resolución de pantalla y buscar assets específicos:
     - Si `ancho > alto` y existe `assets/{appname}-landscapeSplash.png`: Abrir frame de splash integrado (reemplazando transparencia por el color de acento del SO).
