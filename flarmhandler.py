@@ -8,7 +8,7 @@ from __future__ import annotations
 import sys, os, platform, tempfile, shutil, zipfile, tarfile, re, json, webbrowser, subprocess, time, ctypes
 from pathlib import Path
 from urllib.parse import urlparse
-from PyQt5 import QtWidgets, QtGui, QtCore, QtSvg
+from PyQt6 import QtWidgets, QtGui, QtCore, QtSvg
 
 # ``requests`` sólo se usa en el modo online (GitHub). Las acciones de shell y
 # la lectura de cabecera deben funcionar sin él, así que su ausencia no impide
@@ -1159,9 +1159,9 @@ class CustomTitleBar(QtWidgets.QWidget):
         
         # Create icon
         pixmap = QtGui.QPixmap(46, 32)
-        pixmap.fill(QtCore.Qt.transparent)
+        #pixmap.fill(QtCore.Qt.transparent)
         painter = QtGui.QPainter(pixmap)
-        painter.setRenderHint(QtGui.QPainter.Antialiasing)
+        #painter.setRenderHint(QtGui.QPainter.Antialiasing)
         
         pen = QtGui.QPen(QtGui.QColor("#202124"))
         pen.setWidthF(1.2)
@@ -1238,7 +1238,7 @@ class BlurredBanner(QtWidgets.QWidget):
         self.bg_label.setScaledContents(True)
         
         self.fg_label = QtWidgets.QLabel(self)
-        self.fg_label.setAlignment(QtCore.Qt.AlignCenter)
+        #self.fg_label.setAlignment(QtCore.Qt.AlignCenter)
         
     def setPixmap(self, pixmap):
         self._original_pixmap = pixmap
@@ -1266,7 +1266,7 @@ class BlurredBanner(QtWidgets.QWidget):
         scale_factor = w / img_w
         new_h = int(img_h * scale_factor)
         
-        scaled_pix = self._original_pixmap.scaled(w, new_h, QtCore.Qt.KeepAspectRatio, QtCore.Qt.SmoothTransformation)
+##        scaled_pix = self._original_pixmap.scaled(w, new_h, QtCore.Qt.KeepAspectRatio, QtCore.Qt.SmoothTransformation)
         
         if new_h >= h:
             # Case A: Image is taller than widget (or equal).
@@ -1286,7 +1286,7 @@ class BlurredBanner(QtWidgets.QWidget):
             # We center it vertically and fill background with blur.
             
             # 1. Background: Zoomed blur to fill
-            cover_pix = self._original_pixmap.scaled(w, h, QtCore.Qt.KeepAspectRatioByExpanding, QtCore.Qt.SmoothTransformation)
+##            cover_pix = self._original_pixmap.scaled(w, h, QtCore.Qt.KeepAspectRatioByExpanding, QtCore.Qt.SmoothTransformation)
             # Crop center of cover
             cx = (cover_pix.width() - w) // 2
             cy = (cover_pix.height() - h) // 2
@@ -1417,7 +1417,7 @@ class InstallWindow(QtWidgets.QWidget):
         if not self.installed_path and not local_file_path:
             self.installed_path = find_installed_path(owner, repo)
 
-        self.setWindowFlags(QtCore.Qt.FramelessWindowHint)
+        #self.setWindowFlags(QtCore.Qt.FramelessWindowHint)
         self.resize(1000, 650)
         
         # Main Layout
@@ -1475,18 +1475,18 @@ class InstallWindow(QtWidgets.QWidget):
         
         self.install_btn = QtWidgets.QPushButton("Instalar")
         self.install_btn.setObjectName("PrimaryBtn")
-        self.install_btn.setCursor(QtCore.Qt.PointingHandCursor)
+        #self.install_btn.setCursor(QtCore.Qt.PointingHandCursor)
         self.install_btn.setMinimumWidth(120)
         action_h.addWidget(self.install_btn)
         
         self.share_btn = QtWidgets.QPushButton("Compartir")
-        self.share_btn.setCursor(QtCore.Qt.PointingHandCursor)
+        #self.share_btn.setCursor(QtCore.Qt.PointingHandCursor)
         self.share_btn.setMinimumWidth(120)
         action_h.addWidget(self.share_btn)
 
         if self.installed_path:
             self.uninstall_btn = QtWidgets.QPushButton("Desinstalar")
-            self.uninstall_btn.setCursor(QtCore.Qt.PointingHandCursor)
+            #self.uninstall_btn.setCursor(QtCore.Qt.PointingHandCursor)
             self.uninstall_btn.setMinimumWidth(120)
             self.uninstall_btn.setStyleSheet("color: #d93025; border: 1px solid #f28b82;")
             action_h.addWidget(self.uninstall_btn)
@@ -1627,9 +1627,9 @@ class InstallWindow(QtWidgets.QWidget):
         if getattr(self, "package_icon", b""):
             pix = QtGui.QPixmap()
             if pix.loadFromData(self.package_icon):
-                self.icon_label.setPixmap(
+                """self.icon_label.setPixmap(
                     pix.scaled(72, 72, QtCore.Qt.KeepAspectRatio, QtCore.Qt.SmoothTransformation)
-                )
+                )"""
 
         if not self.temp_extract_dir:
             return
@@ -1641,7 +1641,7 @@ class InstallWindow(QtWidgets.QWidget):
 
         if icon_path.exists() and not getattr(self, "package_icon", b""):
             pix = QtGui.QPixmap(str(icon_path))
-            self.icon_label.setPixmap(pix.scaled(72, 72, QtCore.Qt.KeepAspectRatio, QtCore.Qt.SmoothTransformation))
+##            self.icon_label.setPixmap(pix.scaled(72, 72, QtCore.Qt.KeepAspectRatio, QtCore.Qt.SmoothTransformation))
 
         # Banner
         banner_path = self.temp_extract_dir / "assets" / "splash.png"
@@ -1661,7 +1661,7 @@ class InstallWindow(QtWidgets.QWidget):
     def log_msg(self, s: str):
         self.log.append(s)
         cursor = self.log.textCursor()
-        cursor.movePosition(QtGui.QTextCursor.End)
+##        cursor.movePosition(QtGui.QTextCursor.End)
         self.log.setTextCursor(cursor)
 
     def set_progress(self, val: int):
@@ -1727,14 +1727,14 @@ class InstallWindow(QtWidgets.QWidget):
             if r.ok:
                 pix = QtGui.QPixmap()
                 pix.loadFromData(r.content)
-                self.icon_label.setPixmap(pix.scaled(72, 72, QtCore.Qt.KeepAspectRatio, QtCore.Qt.SmoothTransformation))
+                #self.icon_label.setPixmap(pix.scaled(72, 72, QtCore.Qt.KeepAspectRatio, QtCore.Qt.SmoothTransformation))
             else:
                 icon_url_png = f"https://raw.githubusercontent.com/{self.owner}/{self.repo}/main/app/app-icon.png"
                 r = requests.get(icon_url_png, timeout=4)
                 if r.ok:
                     pix = QtGui.QPixmap()
                     pix.loadFromData(r.content)
-                    self.icon_label.setPixmap(pix.scaled(72, 72, QtCore.Qt.KeepAspectRatio, QtCore.Qt.SmoothTransformation))
+##                    self.icon_label.setPixmap(pix.scaled(72, 72, QtCore.Qt.KeepAspectRatio, QtCore.Qt.SmoothTransformation))
         except Exception:
             pass
 
@@ -2331,7 +2331,7 @@ def main(argv):
             "Registro actualizado correctamente.\n\nEl handler quedó asociado a los paquetes .iflapp y .asksome (icono y descripción incluidos).")
         return 0
 
-    return app.exec_()
+    return app.exec()
 
 if __name__ == "__main__":
     sys.exit(main(sys.argv))
