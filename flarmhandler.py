@@ -5,10 +5,38 @@ Fluthin Armadillo Store handler (PyQt5 + Markdown + Custom Titlebar + Orange The
 """
 
 from __future__ import annotations
-import sys, os, platform, tempfile, shutil, zipfile, tarfile, re, json, webbrowser, subprocess, requests, time, ctypes
+import sys, os, platform, tempfile, shutil, zipfile, tarfile, re, json, webbrowser, subprocess, time, ctypes
 from pathlib import Path
 from urllib.parse import urlparse
 from PyQt5 import QtWidgets, QtGui, QtCore, QtSvg
+
+# ``requests`` sólo se usa en el modo online (GitHub). Las acciones de shell y
+# la lectura de cabecera deben funcionar sin él, así que su ausencia no impide
+# registrar las asociaciones en un sistema mínimo.
+try:
+    import requests
+    HAS_REQUESTS = True
+except Exception:
+    requests = None
+    HAS_REQUESTS = False
+
+# --- Contenedores .iflapp v2 / .asksome e integración de shell ---
+# El paquete se instala como una app del ecosistema Fluthin, así que la lectura
+# de cabecera y la asociación de tipos MIME viven en ``lib`` y se reutilizan
+# aquí en vez de reimplementar el formato binario.
+_ROOT = Path(__file__).resolve().parent
+if str(_ROOT) not in sys.path:
+    sys.path.insert(0, str(_ROOT))
+
+try:
+    from lib import iflapp_format as _iflapp_format
+    from lib import asksome_format as _asksome_format
+    from lib import native_shell as _native_shell
+    from lib import package_shell as _package_shell
+    HAS_PACKAGE_LIBS = True
+except Exception as _pkg_exc:  # pragma: no cover - entorno incompleto
+    HAS_PACKAGE_LIBS = False
+    _PACKAGE_LIBS_ERROR = str(_pkg_exc)
 
 # --- Try to import PyQt5-Markdown widgets ---
 try:
@@ -250,6 +278,56 @@ def run_as_admin(argv=None):
     ret = ctypes.windll.shell32.ShellExecuteW(None, "runas", executable, argument_line, None, 1)
     return int(ret) > 32
 
+CANONICAL_NAME_RE = re.compile(
+    r"^(?P<publisher>[^-.]+)\.(?P<app>[^-.]+)\.(?P<version>v[^-]+)-(?P<stamp>\d{2}\.\d{2}-\d{2}\.\d{2})-(?P<platform>[^-]+)$"
+)
+
+PLATFORM_ALIASES = {
+    "linux": "Danenone",
+    "danenone": "Danenone",
+    "windows": "Knosthalij",
+    "win": "Knosthalij",
+    "knosthalij": "Knosthalij",
+    "multiplatform": "AlphaCube",
+    "multi": "AlphaCube",
+    "alphacube": "AlphaCube",
+}
+
+
+def normalize_platform(value: str) -> str:
+    """Normaliza el sufijo de plataforma a una de las tres canónicas."""
+    return PLATFORM_ALIASES.get((value or "").strip().lower(), (value or "").strip())
+
+
+def parse_package_filename(filename: str) -> dict:
+    """Descompone un nombre de paquete en sus partes.
+
+    Acepta el nombre canónico
+    ``publisher.app.vX.x-YY.MM-HH.MM-Platform`` y, como respaldo, el formato
+    histórico ``nombre-version-plataforma``. Devuelve ``publisher``, ``app``,
+    ``version`` y ``platform`` (``""`` si no se pudo reconocer).
+    """
+    stem = Path(filename).stem
+    match = CANONICAL_NAME_RE.match(stem)
+    if match:
+        parts = match.groupdict()
+        return {
+            "publisher": parts["publisher"],
+            "app": parts["app"],
+            "version": parts["version"],
+            "platform": normalize_platform(parts["platform"]),
+        }
+    legacy = re.match(r"^(.+?)-([0-9A-Za-z.\-_]+)-([0-9A-Za-z._\-]+)$", stem, re.IGNORECASE)
+    if legacy:
+        return {
+            "publisher": "",
+            "app": legacy.group(1),
+            "version": legacy.group(2),
+            "platform": normalize_platform(legacy.group(3)),
+        }
+    return {"publisher": "", "app": stem, "version": "", "platform": ""}
+
+
 def platform_tag() -> str:
     sysplat = platform.system().lower()
     if 'windows' in sysplat or 'win' in sysplat:
@@ -299,44 +377,48 @@ def parse_Fluthin_url(url: str) -> tuple[str, str]:
     else:
         raise ValueError(f"URL inválida: {url}. Debe ser Fluthinstore://username.repo")
 
-def platform_system_tag_for_asset() -> str:
-    return platform_tag()
-
 def best_asset_for_platform(assets: list, shortname: str) -> tuple[dict | None, str | None, str | None]:
-    plat = platform_system_tag_for_asset().lower()
-    aliases = {
-        'knosthalij': ['knosthalij', 'windows', 'win'],
-        'danenone': ['danenone', 'linux', 'mac', 'macos', 'darwin']
-    }
-    
-    def match_name(name: str) -> bool:
-        if not name.lower().endswith('.iflapp'):
-            return False
-        m = re.match(r'^(.+?)-([0-9A-Za-z\.\-_]+)-([0-9A-Za-z\._\-]+)\.iflapp$', name, re.IGNORECASE)
-        if not m:
-            return False
-        platpart = m.group(3).lower()
-        for key, vals in aliases.items():
-            if plat in [key] and any(v in platpart for v in vals):
-                return True
-        return False
+    """Elige el asset ``.iflapp`` compatible con la plataforma actual.
 
+    Usa :func:`parse_package_filename`, así que entiende tanto el nombre
+    canónico ``publisher.app.vX.x-YY.MM-HH.MM-Platform`` como el histórico.
+    Devuelve ``(asset, version, plataforma)`` o ``(None, None, None)``.
+    """
+    current = platform_tag()
+    aliases = {
+        "Danenone": ("danenone", "linux", "mac", "macos", "darwin"),
+        "Knosthalij": ("knosthalij", "windows", "win"),
+        "AlphaCube": ("alphacube", "multi", "multiplatform"),
+    }
+    wanted = aliases.get(current, ())
+
+    def platform_matches(platform_value: str) -> bool:
+        value = (platform_value or "").lower()
+        return any(alias in value for alias in wanted)
+
+    # 1) Asset con plataforma compatible.
     for a in assets:
-        if match_name(a.get('name','')):
-            m = re.match(r'^(.+?)-([0-9A-Za-z\.\-_]+)-([0-9A-Za-z\._\-]+)\.iflapp$', a.get('name',''), re.IGNORECASE)
-            if m:
-                return a, m.group(2), m.group(3)
-    
+        name = a.get('name', '')
+        if not name.lower().endswith('.iflapp'):
+            continue
+        parsed = parse_package_filename(name)
+        if platform_matches(parsed["platform"]):
+            return a, parsed["version"], parsed["platform"]
+
+    # 2) Asset cuyo app coincide con el shortname, aunque no declare plataforma.
     for a in assets:
-        name = a.get('name','')
-        if name.lower().endswith('.iflapp') and name.lower().startswith(shortname.lower() + '-'):
-             m = re.match(r'^(.+?)-([0-9A-Za-z\.\-_]+)-([0-9A-Za-z\._\-]+)\.iflapp$', name, re.IGNORECASE)
-             if m:
-                 return a, m.group(2), m.group(3)
-                 
+        name = a.get('name', '')
+        if not name.lower().endswith('.iflapp'):
+            continue
+        parsed = parse_package_filename(name)
+        if shortname and parsed["app"].lower() == shortname.lower():
+            return a, parsed["version"], parsed["platform"]
+
     return None, None, None
 
 def download_file(url: str, dest_path: str, progress_callback=None) -> str:
+    if not HAS_REQUESTS:
+        raise RuntimeError("Se requiere el módulo 'requests' para descargar paquetes (modo online).")
     with requests.get(url, stream=True, timeout=30) as r:
         r.raise_for_status()
         total_length = r.headers.get('content-length')
@@ -360,10 +442,90 @@ def _safe_extract_member(base: Path, member_name: str) -> Path:
     return target
 
 
+def _package_kind(file_path: str) -> str:
+    """Clasifica el contenedor: ``iflapp2``, ``asksome``, ``zip`` o ``unknown``."""
+    if not HAS_PACKAGE_LIBS:
+        return "unknown"
+    try:
+        data = Path(file_path).read_bytes()[:16]
+    except OSError:
+        return "unknown"
+    if data.startswith(_asksome_format.MAGIC):
+        return "asksome"
+    return _iflapp_format.sniff_format(file_path)
+
+
+def read_package_identity(file_path: str) -> dict:
+    """Identidad de un paquete leída de su cabecera, sin descifrar el payload.
+
+    Devuelve las mismas claves que ``parse_details_xml`` (``name``,
+    ``publisher``, ``app``, ``version``, ``platform``, ``author``) para que el
+    resto del flujo no distinga entre un ``.iflapp`` v2, un ``.asksome`` o el
+    ZIP histórico.
+    """
+    if not HAS_PACKAGE_LIBS:
+        return {}
+    kind = _package_kind(file_path)
+    if kind == "asksome":
+        header = _asksome_format.read_asksome_header(file_path)
+        metadata = dict(header.get("metadata", {}))
+        return {
+            "name": metadata.get("name", ""),
+            "publisher": metadata.get("publisher", ""),
+            "app": metadata.get("app", ""),
+            "version": metadata.get("version", ""),
+            "platform": metadata.get("platform", ""),
+            "author": metadata.get("author") or metadata.get("signer", ""),
+        }
+    if kind == "iflapp2":
+        header = _iflapp_format.read_iflapp_header(file_path)
+        return dict(header.identity())
+    if kind == "zip":
+        try:
+            with zipfile.ZipFile(file_path, "r") as archive:
+                if "details.xml" in archive.namelist():
+                    return parse_details_xml(
+                        archive.read("details.xml").decode("utf-8", errors="replace")
+                    )
+        except (zipfile.BadZipFile, KeyError, OSError):
+            return {}
+    return {}
+
+
+def read_package_icon(file_path: str) -> bytes:
+    """Bytes del icono de cabecera del paquete (vacío si no hay o no aplica)."""
+    if not HAS_PACKAGE_LIBS:
+        return b""
+    try:
+        kind = _package_kind(file_path)
+        if kind in ("iflapp2", "asksome"):
+            data = _native_shell.icon_bytes(file_path)
+            return data or b""
+    except Exception:
+        return b""
+    return b""
+
+
 def extract_archive(file_path: str, extract_to: str) -> bool:
+    """Extrae un paquete ``.iflapp`` v2, ``.asksome``, ZIP o TAR en *extract_to*.
+
+    El contenedor ``.iflapp`` v2 y el ``.asksome`` no son ZIP: se delegan en
+    ``lib.iflapp_format`` / ``lib.asksome_format``, que ya aplican la
+    verificación de firma y la protección contra traversal. El ZIP y el TAR
+    históricos conservan las salvaguardas locales.
+    """
     file_path = str(file_path)
     base = Path(extract_to).resolve()
     base.mkdir(parents=True, exist_ok=True)
+
+    kind = _package_kind(file_path)
+    if kind == "iflapp2" and HAS_PACKAGE_LIBS:
+        _iflapp_format.extract_iflapp(file_path, base)
+        return True
+    if kind == "asksome" and HAS_PACKAGE_LIBS:
+        _asksome_format.extract_asksome(file_path, base)
+        return True
+
     if zipfile.is_zipfile(file_path):
         with zipfile.ZipFile(file_path, 'r') as z:
             for member in z.infolist():
@@ -411,8 +573,9 @@ def create_documents_app_folder(publisher: str, app: str, version: str, platform
         documents = Path(os.path.join(os.environ.get('USERPROFILE',''), 'Documents'))
     else:
         documents = home / 'Documents'
-    # New format: {publisher}-{app}-{version}-{platform}
-    base = documents / 'Fluthin Apps' / f"{publisher}-{app}-{version}-{platformstr}"
+    # Nombre canónico: {publisher}.{app}.{version}-{platform} (igual que
+    # ``find_installed_package``, que busca exactamente esta carpeta).
+    base = documents / 'Fluthin Apps' / f"{publisher}.{app}.{version}-{platformstr}"
     base.mkdir(parents=True, exist_ok=True)
     return base
 
@@ -429,6 +592,33 @@ def move_install_tree(temp_extract_dir: Path, target_dir: Path) -> Path:
                 dest.unlink()
             shutil.move(str(item), str(dest))
     return targ
+
+def ensure_executable_bits(root_dir: Path) -> list[str]:
+    """Da permiso de ejecución a los binarios instalados.
+
+    El tar del contenedor puede no conservar el bit ``+x``, y sin él el
+    lanzador no encuentra el ejecutable. Se marcan los ficheros sin extensión
+    y los ``.elf``/``.sh`` bajo ``app`` y ``bin``.
+    """
+    marked: list[str] = []
+    if os.name == 'nt':
+        return marked
+    root = Path(root_dir)
+    for folder in ("app", "bin"):
+        candidate = root / folder
+        if not candidate.is_dir():
+            continue
+        for path in candidate.rglob('*'):
+            if not path.is_file():
+                continue
+            suffix = path.suffix.lower()
+            if suffix in ("", ".elf", ".sh", ".run", ".bin"):
+                try:
+                    path.chmod(path.stat().st_mode | 0o111)
+                    marked.append(str(path))
+                except OSError:
+                    pass
+    return marked
 
 def create_shortcut(desktop_path: Path, target: Path, name: str, args: str = "") -> str:
     desktop_path.mkdir(parents=True, exist_ok=True)
@@ -643,6 +833,88 @@ def get_icon_path() -> str:
     
     return str(icon_path)
 
+def _handler_command(python_path: str, script_path: str) -> str:
+    """Línea de comandos que abre un paquete con el handler (marcador ``%1``)."""
+    if getattr(sys, 'frozen', False):
+        return f'"{python_path}" -l "%1"'
+    return f'"{python_path}" "{script_path}" -l "%1"'
+
+
+def register_package_associations(python_path: str, script_path: str) -> tuple[bool, str]:
+    """Asocia ``.iflapp``/``.asksome`` con icono y descripción.
+
+    Hace que el explorador del sistema muestre un ``.iflapp`` como cualquier
+    otro ejecutable: con el icono del handler y su descripción en las
+    propiedades. En freedesktop se escribe el XML de MIME, el ``.desktop`` y el
+    icono; en Windows se escribe en el registro vía ``winreg``.
+    """
+    if not HAS_PACKAGE_LIBS:
+        return False, f"Faltan las librerías de paquetes: {_PACKAGE_LIBS_ERROR}"
+
+    system = platform.system().lower()
+    if 'windows' in system:
+        if winreg is None:
+            return False, "winreg no disponible"
+        cmd_file = _handler_command(python_path, script_path)
+        icon_path = get_icon_path()
+        try:
+            for extension, (mime, label, description) in _package_shell.EXTENSIONS.items():
+                prog_id = "Fluthin.Package" if extension == ".iflapp" else "Fluthin.Asksome"
+                with winreg.CreateKey(winreg.HKEY_CURRENT_USER, rf"Software\Classes\{extension}") as key:
+                    winreg.SetValueEx(key, None, 0, winreg.REG_SZ, prog_id)
+                with winreg.CreateKey(winreg.HKEY_CURRENT_USER, rf"Software\Classes\{prog_id}") as key:
+                    winreg.SetValueEx(key, None, 0, winreg.REG_SZ, label)
+                    winreg.SetValueEx(key, "FriendlyTypeName", 0, winreg.REG_SZ, description)
+                if os.path.exists(icon_path):
+                    with winreg.CreateKey(winreg.HKEY_CURRENT_USER, rf"Software\Classes\{prog_id}\DefaultIcon") as key:
+                        winreg.SetValueEx(key, None, 0, winreg.REG_SZ, f"{icon_path},0")
+                with winreg.CreateKey(winreg.HKEY_CURRENT_USER, rf"Software\Classes\{prog_id}\shell\open\command") as key:
+                    winreg.SetValueEx(key, None, 0, winreg.REG_SZ, cmd_file)
+                with winreg.CreateKey(winreg.HKEY_CURRENT_USER, rf"Software\Classes\{prog_id}\Content Type") as key:
+                    winreg.SetValueEx(key, None, 0, winreg.REG_SZ, mime)
+            try:
+                ctypes.windll.shell32.SHChangeNotify(0x08000000, 0x0000, None, None)
+            except Exception:
+                pass
+            return True, "Asociaciones .iflapp/.asksome registradas (HKCU)"
+        except Exception as exc:
+            return False, f"No se pudieron registrar las asociaciones: {exc}"
+
+    result = _package_shell.install_shell(
+        handler_command=_handler_command(python_path, script_path),
+        icon_path=get_icon_path(),
+    )
+    if result.written:
+        try:
+            subprocess.run(["update-desktop-database", str(Path.home() / ".local" / "share" / "applications")],
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except Exception:
+            pass
+        return True, f"{len(result.written)} archivos de asociación escritos"
+    return False, "; ".join(result.skipped) or "No se escribió nada"
+
+
+def unregister_package_associations() -> tuple[bool, str]:
+    """Retira las asociaciones de paquete escritas por el registro."""
+    if not HAS_PACKAGE_LIBS:
+        return False, f"Faltan las librerías de paquetes: {_PACKAGE_LIBS_ERROR}"
+    system = platform.system().lower()
+    if 'windows' in system:
+        if winreg is None:
+            return False, "winreg no disponible"
+        removed = 0
+        for path in (r"Software\Classes\.iflapp", r"Software\Classes\.asksome",
+                     r"Software\Classes\Fluthin.Package", r"Software\Classes\Fluthin.Asksome"):
+            try:
+                winreg.DeleteKey(winreg.HKEY_CURRENT_USER, path)
+                removed += 1
+            except OSError:
+                pass
+        return True, f"{removed} claves retiradas"
+    result = _package_shell.uninstall_shell()
+    return True, f"{len(result.removed)} archivos retirados"
+
+
 def register_scheme_windows(python_path: str, script_path: str) -> tuple[bool, str]:
     if winreg is None:
         return False, "winreg module not available"
@@ -813,13 +1085,19 @@ def ensure_registered(python_path: str, script_path: str) -> tuple[bool, str, bo
     system = platform.system().lower()
     if 'windows' in system:
         if check_registry_keys(python_path, script_path):
+            # Aun así, asegura las asociaciones de .iflapp/.asksome (icono y
+            # descripción) que el chequeo antiguo no cubría.
+            register_package_associations(python_path, script_path)
             return True, "Already registered correctly", False
-        
+
         # Try to register in HKCU (no admin needed usually)
         success, msg = register_scheme_windows(python_path, script_path)
+        # Asocia también .iflapp/.asksome con icono y descripción.
+        assoc_ok, assoc_msg = register_package_associations(python_path, script_path)
         if success:
-            return True, msg, True  # Registry was modified
-            
+            extra = f" | {assoc_msg}" if assoc_ok else ""
+            return True, msg + extra, True  # Registry was modified
+
         # If failed, maybe we need admin rights (though HKCU shouldn't need it)
         # But if we were trying HKCR before, we might need it.
         # Our new logic prefers HKCU.
@@ -828,9 +1106,13 @@ def ensure_registered(python_path: str, script_path: str) -> tuple[bool, str, bo
         return False, msg, False
     if 'linux' in system:
         success, msg = register_scheme_linux(python_path, script_path)
+        assoc_ok, assoc_msg = register_package_associations(python_path, script_path)
+        if success and assoc_ok:
+            msg = f"{msg} | {assoc_msg}"
         return success, msg, success
     if 'darwin' in system:
         success, msg = register_scheme_macos(python_path, script_path)
+        register_package_associations(python_path, script_path)
         return success, msg, success
     return False, "Unsupported OS", False
 
@@ -1113,6 +1395,7 @@ class InstallWindow(QtWidgets.QWidget):
         self.shortname = repo
         self.app_name = repo # Default fallback
         self.temp_extract_dir = None # To clean up later if needed
+        self.package_icon = b"" # Icono leído de la cabecera del paquete
         
         # Metadata placeholders
         self.meta_publisher = owner
@@ -1297,37 +1580,29 @@ class InstallWindow(QtWidgets.QWidget):
             self.load_local_assets_to_ui()
 
     def load_local_package_metadata(self):
-        """Extracts details.xml from the local package to populate metadata."""
+        """Lee la identidad del paquete local sin descomprimir el payload.
+
+        El contenedor ``.iflapp`` v2 y el ``.asksome`` no son ZIP, así que la
+        cabecera se lee con :func:`read_package_identity`; sólo el ZIP
+        histórico necesita extracción para llegar a ``details.xml``.
+        """
         try:
-            self.temp_extract_dir = Path(tempfile.mkdtemp(prefix="Fluthin_meta_"))
-            with zipfile.ZipFile(self.local_file_path, 'r') as z:
-                # Try to extract details.xml
-                if "details.xml" in z.namelist():
-                    z.extract("details.xml", self.temp_extract_dir)
-                    details_path = self.temp_extract_dir / "details.xml"
-                    content = details_path.read_text(encoding='utf-8')
-                    data = parse_details_xml(content)
-                    
-                    self.app_name = data.get('name', self.app_name)
-                    self.meta_publisher = data.get('publisher', self.meta_publisher)
-                    self.meta_app = data.get('app', self.meta_app)
-                    self.meta_version = data.get('version', self.meta_version)
-                    self.meta_platform = data.get('platform', self.meta_platform)
-                    self.meta_author = data.get('author', self.meta_author)
-                    
-                    # Update owner/repo for remote fallback
-                    if data.get('publisher'): self.owner = data.get('publisher')
-                    if data.get('app'): self.repo = data.get('app')
-                
-                # Extract assets if they exist
-                assets_to_extract = []
-                for f in z.namelist():
-                    if f.startswith("assets/") or f.startswith("app/"):
-                        assets_to_extract.append(f)
-                
-                if assets_to_extract:
-                    z.extractall(self.temp_extract_dir, members=assets_to_extract)
-            
+            data = read_package_identity(self.local_file_path)
+            if data:
+                self.app_name = data.get('name') or self.app_name
+                self.meta_publisher = data.get('publisher') or self.meta_publisher
+                self.meta_app = data.get('app') or self.meta_app
+                self.meta_version = data.get('version') or self.meta_version
+                self.meta_platform = data.get('platform') or self.meta_platform
+                self.meta_author = data.get('author') or self.meta_author
+
+                # Update owner/repo for remote fallback
+                if data.get('publisher'): self.owner = data.get('publisher')
+                if data.get('app'): self.repo = data.get('app')
+
+            # Icono de cabecera (v2/asksome) o de assets extraídos (ZIP).
+            self.package_icon = read_package_icon(self.local_file_path)
+
             # Check Platform Compatibility
             is_compat, msg = check_platform_compatibility(self.meta_platform)
             if not is_compat:
@@ -1342,18 +1617,32 @@ class InstallWindow(QtWidgets.QWidget):
             print(f"Error reading local package metadata: {e}")
 
     def load_local_assets_to_ui(self):
-        """Loads icons and banner from the extracted temp dir."""
-        if not self.temp_extract_dir: return
-        
-        # Icon
+        """Carga el icono y el banner del paquete en la interfaz.
+
+        El contenedor v2 guarda el icono en la cabecera (no hay que extraerlo),
+        así que se prefiere ``package_icon``; si no hay, se busca el icono
+        extraído (ZIP histórico).
+        """
+        # Icono de cabecera del contenedor v2/.asksome
+        if getattr(self, "package_icon", b""):
+            pix = QtGui.QPixmap()
+            if pix.loadFromData(self.package_icon):
+                self.icon_label.setPixmap(
+                    pix.scaled(72, 72, QtCore.Qt.KeepAspectRatio, QtCore.Qt.SmoothTransformation)
+                )
+
+        if not self.temp_extract_dir:
+            return
+
+        # Icono extraído (ZIP histórico) si no se pintó el de cabecera.
         icon_path = self.temp_extract_dir / "app" / "app-icon.ico"
         if not icon_path.exists():
              icon_path = self.temp_extract_dir / "app" / "app-icon.png"
-        
-        if icon_path.exists():
+
+        if icon_path.exists() and not getattr(self, "package_icon", b""):
             pix = QtGui.QPixmap(str(icon_path))
             self.icon_label.setPixmap(pix.scaled(72, 72, QtCore.Qt.KeepAspectRatio, QtCore.Qt.SmoothTransformation))
-            
+
         # Banner
         banner_path = self.temp_extract_dir / "assets" / "splash.png"
         if banner_path.exists():
@@ -1592,7 +1881,7 @@ class InstallWindow(QtWidgets.QWidget):
         self.progress.setValue(0)
         self.log_msg("Iniciando instalación...")
         
-        worker = InstallWorker(self.repo, self.owner, self.shortname, self.app_name, self.local_file_path, self.meta_app, self.meta_publisher)
+        worker = InstallWorker(self.repo, self.owner, self.shortname, self.app_name, self.local_file_path, self.meta_app, self.meta_publisher, self.meta_version, self.meta_platform)
         worker.signals.log.connect(self.log_msg)
         worker.signals.progress.connect(self.set_progress)
         worker.signals.done.connect(self.install_finished)
@@ -1623,7 +1912,7 @@ class WorkerSignals(QtCore.QObject):
     ask_open_releases = QtCore.pyqtSignal(str)
 
 class InstallWorker(QtCore.QRunnable):
-    def __init__(self, repo: str, owner: str, shortname: str, app_name: str, local_file_path: str = None, meta_app_id: str = None, meta_publisher: str = None):
+    def __init__(self, repo: str, owner: str, shortname: str, app_name: str, local_file_path: str = None, meta_app_id: str = None, meta_publisher: str = None, meta_version: str = None, meta_platform: str = None):
         super().__init__()
         self.repo = repo
         self.owner = owner
@@ -1632,6 +1921,8 @@ class InstallWorker(QtCore.QRunnable):
         self.local_file_path = local_file_path
         self.meta_app_id = meta_app_id
         self.meta_publisher = meta_publisher
+        self.meta_version = meta_version
+        self.meta_platform = meta_platform
         self.signals = WorkerSignals()
 
     def run(self):
@@ -1640,18 +1931,16 @@ class InstallWorker(QtCore.QRunnable):
                 # Offline Mode
                 self.signals.log.emit(f"Preparando instalación de paquete local...")
                 
-                # Parse filename for version/platform
-                filename = os.path.basename(self.local_file_path)
-                match = re.match(r'^(.+?)-([0-9A-Za-z\.\-_]+)-([0-9A-Za-z\._\-]+)\.iflapp$', filename, re.IGNORECASE)
-                if match:
-                    version = match.group(2)
-                    platformstr = match.group(3)
-                else:
-                    version = "local"
-                    platformstr = "unknown"
+                # Preferir los metadatos de la cabecera del paquete; el nombre
+                # de archivo sólo es el respaldo.
+                parsed = parse_package_filename(self.local_file_path)
+                version = self.meta_version or parsed["version"] or "local"
+                platformstr = normalize_platform(self.meta_platform or parsed["platform"]) or "unknown"
+                publisher = self.meta_publisher or parsed["publisher"]
+                app_id = self.meta_app_id or parsed["app"] or self.shortname
 
                 # Check compatibility (Double check)
-                if platformstr.lower() == 'danenone' and platform_tag() == 'win':
+                if platformstr == 'Danenone' and platform_tag() == 'Knosthalij':
                      self.signals.log.emit("Error: Paquete 'Danenone' (Linux) incompatible con Windows.")
                      self.signals.done.emit(False, "")
                      return
@@ -1660,15 +1949,16 @@ class InstallWorker(QtCore.QRunnable):
                 tmpdir = Path(tempfile.mkdtemp(prefix="Fluthin_iflapp_"))
                 extract_dir = tmpdir / "extract"
                 extract_dir.mkdir(parents=True, exist_ok=True)
-                
-                extract_archive(self.local_file_path, str(extract_dir))
-                
+
+                if not extract_archive(self.local_file_path, str(extract_dir)):
+                    self.signals.log.emit("Error: no se pudo extraer el paquete (formato o firma inválidos).")
+                    self.signals.done.emit(False, "")
+                    return
+
                 self.signals.log.emit("Instalando...")
-                # Use meta values if available, otherwise fallback to defaults
-                publisher_to_use = self.meta_publisher if self.meta_publisher else self.owner
-                app_id_to_use = self.meta_app_id if self.meta_app_id else self.shortname
-                dest_base = create_documents_app_folder(publisher_to_use, app_id_to_use, version, platformstr)
+                dest_base = create_documents_app_folder(publisher, app_id, version, platformstr)
                 move_install_tree(extract_dir, dest_base)
+                ensure_executable_bits(dest_base)
                 
                 # Shortcut logic
                 exe_path = find_executable(dest_base, self.shortname)
@@ -1727,14 +2017,21 @@ class InstallWorker(QtCore.QRunnable):
             self.signals.log.emit("Extrayendo...")
             extract_dir = tmpdir / "extract"
             extract_dir.mkdir(parents=True, exist_ok=True)
-            extract_archive(str(downloaded), str(extract_dir))
+            if not extract_archive(str(downloaded), str(extract_dir)):
+                self.signals.log.emit("Error: no se pudo extraer el paquete descargado.")
+                self.signals.done.emit(False, "")
+                return
             
             self.signals.log.emit("Instalando...")
-            # Use meta values if available, otherwise fallback to defaults
-            publisher_to_use = self.meta_publisher if self.meta_publisher else self.owner
-            app_id_to_use = self.meta_app_id if self.meta_app_id else self.shortname
-            dest_base = create_documents_app_folder(publisher_to_use, app_id_to_use, version or "v1", platformstr or "unknown")
+            # La cabecera del paquete manda sobre el nombre del asset.
+            header = read_package_identity(str(downloaded)) or {}
+            publisher_to_use = header.get("publisher") or self.meta_publisher or self.owner
+            app_id_to_use = header.get("app") or self.meta_app_id or self.shortname
+            version_to_use = header.get("version") or version or "v1"
+            platform_to_use = normalize_platform(header.get("platform") or platformstr or "unknown")
+            dest_base = create_documents_app_folder(publisher_to_use, app_id_to_use, version_to_use, platform_to_use)
             move_install_tree(extract_dir, dest_base)
+            ensure_executable_bits(dest_base)
             
             # Download details.xml to install folder for future reference
             try:
@@ -1786,50 +2083,187 @@ def cancel_restart():
     return False
 
 def handle_iflapp_file(file_path: str):
-    """Handle .iflapp file as offline installer package."""
+    """Abre un paquete ``.iflapp`` v2, ``.asksome`` o un descriptor ``.mexf``.
+
+    ``.iflapp`` y ``.asksome`` abren la ventana de instalación unificada; un
+    ``.mexf`` declara su propia integración de shell y se aplica directamente.
+    """
     try:
         file_path = os.path.abspath(file_path)
         if not os.path.exists(file_path):
             QtWidgets.QMessageBox.critical(None, "Error", f"Archivo no encontrado: {file_path}")
             return None
-        
-        if not file_path.lower().endswith('.iflapp'):
-            QtWidgets.QMessageBox.critical(None, "Error", "El archivo debe tener extensión .iflapp")
+
+        lower = file_path.lower()
+        if lower.endswith('.mexf'):
+            return handle_mexf_file(file_path)
+
+        if not (lower.endswith('.iflapp') or lower.endswith('.asksome')):
+            QtWidgets.QMessageBox.critical(
+                None, "Error",
+                "El archivo debe tener extensión .iflapp, .asksome o .mexf",
+            )
             return None
-            
+
         # Open unified InstallWindow
         w = InstallWindow(repo="", owner="", local_file_path=file_path)
         w.show()
         return w
-        
+
     except Exception as e:
         QtWidgets.QMessageBox.critical(None, "Error de Instalación", f"Error al abrir el paquete:\n{str(e)}")
         return None
 
+
+def handle_mexf_file(file_path: str):
+    """Aplica la integración de shell declarada en un descriptor ``.mexf``.
+
+    El ``.mexf`` no es un paquete de instalación: describe asociaciones,
+    menús y accesos directos. Se aplica el plan con ``lib.mexf_shell`` y se
+    informa al usuario de los archivos escritos.
+    """
+    if not HAS_PACKAGE_LIBS:
+        QtWidgets.QMessageBox.critical(None, "Error", f"Faltan las librerías de paquetes: {_PACKAGE_LIBS_ERROR}")
+        return None
+    try:
+        from lib import mexf_shell
+    except Exception as exc:
+        QtWidgets.QMessageBox.critical(None, "Error", f"No se pudo cargar el shell .mexf: {exc}")
+        return None
+    try:
+        plan = mexf_shell.load_shell_plan(file_path)
+        result = mexf_shell.install_plan(plan)
+        written = len(result.get("written", []))
+        skipped = result.get("skipped", [])
+        message = f"Integración de shell aplicada desde:\n{os.path.basename(file_path)}\n\n{written} archivos escritos."
+        if skipped:
+            message += "\n\nOmitidos:\n" + "\n".join(skipped)
+        QtWidgets.QMessageBox.information(None, "Fluthin Handler", message)
+        return plan
+    except Exception as exc:
+        QtWidgets.QMessageBox.critical(None, "Error", f"No se pudo aplicar el .mexf: {exc}")
+        return None
+
+
+HEADLESS_FLAGS = (
+    "--register-shell",
+    "--unregister-shell",
+    "--info",
+    "--list-extensions",
+    "--version",
+    "--help",
+    "-h",
+)
+
+
+def _print_help() -> int:
+    print(
+        "FlArm Handler — gestor de paquetes .iflapp/.asksome y descriptores .mexf\n\n"
+        "Uso:\n"
+        "  flarmhandler.py                      Abre la interfaz de instalación.\n"
+        "  flarmhandler.py -l <archivo>         Instala/abre un .iflapp, .asksome o .mexf.\n"
+        "  flarmhandler.py -u <url>             Abre un enlace Fluthinstore://owner.repo.\n"
+        "\nAcciones headless (sin ventana):\n"
+        "  --register-shell                     Asocia .iflapp/.asksome con icono y descripción.\n"
+        "  --unregister-shell                   Retira esas asociaciones.\n"
+        "  --info <archivo>                     Muestra la identidad del paquete (cabecera).\n"
+        "  --list-extensions                    Lista las extensiones y tipos MIME asociados.\n"
+        "  --version                            Muestra la versión del handler.\n"
+    )
+    return 0
+
+
+def _print_version() -> int:
+    try:
+        version = (Path(__file__).parent / "version.res").read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        version = "desconocida"
+    print(f"FlArm Handler (flarmhandler) — {version.splitlines()[0].strip() if version else 'desconocida'}")
+    return 0
+
+
+def _list_extensions() -> int:
+    if not HAS_PACKAGE_LIBS:
+        print(f"Faltan las librerías de paquetes: {_PACKAGE_LIBS_ERROR}")
+        return 1
+    for extension, (mime, label, description) in _package_shell.EXTENSIONS.items():
+        print(f"{extension}\t{mime}\t{label}\t{description}")
+    return 0
+
+
+def _package_info(path: str) -> int:
+    if not HAS_PACKAGE_LIBS:
+        print(f"Faltan las librerías de paquetes: {_PACKAGE_LIBS_ERROR}")
+        return 1
+    try:
+        info = _native_shell.package_info(path)
+    except Exception as exc:
+        print(f"Error: {exc}")
+        return 1
+    print(json.dumps(info, indent=2, ensure_ascii=False))
+    return 0
+
+
+def _handle_headless(argv) -> "int | None":
+    """Atiende las acciones de shell sin crear la ventana.
+
+    Devuelve el código de salida, o ``None`` si no era una acción headless.
+    """
+    if not argv:
+        return None
+    flag = argv[0].strip()
+    if flag in ("--help", "-h"):
+        return _print_help()
+    if flag == "--version":
+        return _print_version()
+    if flag == "--list-extensions":
+        return _list_extensions()
+    if flag == "--info":
+        if len(argv) < 2:
+            print("uso: --info <archivo.iflapp|.asksome>")
+            return 2
+        return _package_info(argv[1].strip().strip('"').strip("'"))
+    if flag in ("--register-shell", "--unregister-shell"):
+        python_path = sys.executable
+        script_path = os.path.abspath(sys.argv[0])
+        if flag == "--register-shell":
+            ok, msg = register_package_associations(python_path, script_path)
+        else:
+            ok, msg = unregister_package_associations()
+        print(("OK: " if ok else "ERROR: ") + msg)
+        return 0 if ok else 1
+    return None
+
+
 def main(argv):
     python_path = sys.executable
     script_path = os.path.abspath(argv[0])
-    
+
+    # === ACCIONES HEADLESS (sin ventana) ===
+    headless = _handle_headless(argv[1:])
+    if headless is not None:
+        return headless
+
     # === REGISTRATION ===
-    # Try to register keys in HKCU (User-level) every time to ensure consistency.
-    # This does NOT require admin rights.
-    if platform.system().lower() == 'windows':
-        try:
-            # register_scheme_windows now includes clean reset (delete + create)
-            success, msg = register_scheme_windows(python_path, script_path)
-            # We don't warn if it fails silently, or maybe we should?
-            # For now, let's just ignore if it fails, as the app can still run.
-        except Exception as e:
-            pass
+    # Registra el protocolo y, además, las asociaciones .iflapp/.asksome con
+    # icono y descripción, para que el explorador los trate como ejecutables.
+    # No requiere privilegios de administrador (se usa el ámbito de usuario).
+    try:
+        system = platform.system().lower()
+        if 'windows' in system:
+            register_scheme_windows(python_path, script_path)
+        register_package_associations(python_path, script_path)
+    except Exception:
+        pass
 
     # === APP EXECUTION ===
     app = QtWidgets.QApplication(argv)
     app.setStyleSheet(GLOBAL_QSS)
-    
+
     # Parse arguments with explicit flags
     if len(argv) >= 2:
         arg1 = argv[1].strip().strip('"').strip("'")
-        
+
         # Check for explicit flags
         if arg1 == "-u" and len(argv) >= 3:
             # URL flag: -u Fluthinstore://owner.repo
@@ -1841,7 +2275,7 @@ def main(argv):
             except Exception as e:
                 QtWidgets.QMessageBox.critical(None, "Error", f"URL inválida: {e}")
                 return 1
-                
+
         elif arg1 == "-l" and len(argv) >= 3:
             # Local file flag: -l "path/to/file.iflapp"
             file_path = argv[2].strip().strip('"').strip("'")
@@ -1849,24 +2283,25 @@ def main(argv):
             w = handle_iflapp_file(file_path)
             if not w:
                 return 1
-                
+
         else:
             # No explicit flag, try to auto-detect (backward compatibility)
             arg = arg1
             arg_path = os.path.abspath(arg) if not arg.startswith(f"{SCHEME}:") else arg
-            
-            # Priority 1: Check if it's an existing .iflapp file
-            if os.path.exists(arg_path) and arg_path.lower().endswith('.iflapp'):
+            lower = arg.lower()
+
+            # Priority 1: Check if it's an existing package file
+            if os.path.exists(arg_path) and lower.endswith(('.iflapp', '.asksome', '.mexf')):
                 w = handle_iflapp_file(arg_path)
                 if not w:
                     return 1
-            
-            # Priority 2: Check if argument ends with .iflapp (even if file doesn't exist yet)
-            elif arg.lower().endswith('.iflapp'):
+
+            # Priority 2: Check if argument ends with a package extension
+            elif lower.endswith(('.iflapp', '.asksome', '.mexf')):
                 w = handle_iflapp_file(arg)
                 if not w:
                     return 1
-            
+
             # Priority 3: Handle Fluthinstore:// protocol
             elif arg.startswith(f"{SCHEME}:") or arg.startswith(f"{SCHEME}://"):
                 try:
@@ -1878,7 +2313,7 @@ def main(argv):
                     return 1
             else:
                 # Unknown argument, show manual input
-                text, ok = QtWidgets.QInputDialog.getText(None, "Fluthin Handler", 
+                text, ok = QtWidgets.QInputDialog.getText(None, "Fluthin Handler",
                     f"Argumento no reconocido: {arg}\n\nIntroduce una URL de Fluthin (Fluthinstore://owner.repo):")
                 if ok and text:
                     try:
@@ -1892,10 +2327,10 @@ def main(argv):
                     return 0
     else:
         # No arguments - Just show a success message for the registration
-        QtWidgets.QMessageBox.information(None, "Fluthin Handler", 
-            "Registro actualizado correctamente.\n\nEl programa se ha configurado como administrador y las asociaciones se han restablecido.")
+        QtWidgets.QMessageBox.information(None, "Fluthin Handler",
+            "Registro actualizado correctamente.\n\nEl handler quedó asociado a los paquetes .iflapp y .asksome (icono y descripción incluidos).")
         return 0
-    
+
     return app.exec_()
 
 if __name__ == "__main__":
