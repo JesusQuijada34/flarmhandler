@@ -57,7 +57,18 @@ El tag y el título del release deben ser exactamente `v1.0-26.08-21.56`. Los as
   - Descarga, extracción e instalación automatizada.
   - Creación de accesos directos en el Escritorio.
   - Barra de progreso real.
-  - Formato de carpetas: `{publisher}-{app}-{version}-{platform}`
+  - Formato de carpetas canónico: `{publisher}.{app}.{version}-{platform}`
+- **Compatibilidad de Contenedores**:
+  - Instala paquetes **`.iflapp` v2** (cabecera en claro con icono y firma HMAC).
+  - Instala aplicaciones **`.asksome`** compiladas desde `.mexf`.
+  - Mantiene compatibilidad con los ZIP y TAR históricos.
+- **Integración de Shell**:
+  - Registra las extensiones `.iflapp` y `.asksome` con icono y descripción
+    (XML de MIME + `.desktop` en freedesktop, `.reg` en Windows).
+  - Aplica descriptores **`.mexf`** (`file_associations`, atajos y entradas de menú).
+- **Modo Headless**:
+  - `--version`, `--info <archivo>`, `--list-extensions`, `--register-shell` y
+    `--unregister-shell` funcionan sin abrir ventana (útil en scripts y CI).
 - **Compartir Mejorado**:
   - Genera enlaces cortos con is.gd para paquetes remotos y locales.
   - Para paquetes locales, extrae información del autor desde el XML.
