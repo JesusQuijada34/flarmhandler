@@ -1,5 +1,5 @@
 /* Cuadros de diálogo del sistema. El acento del SO entra por
-   {accent} / {accent_hover}. */
+   __ACCENT__ / __ACCENT_HOVER__. */
 
 QMessageBox {
     background-color: #FFFFFF;
@@ -23,10 +23,10 @@ QMessageBox QPushButton:pressed {
     background-color: #DEDEDE;
 }
 QMessageBox QPushButton:default {
-    background-color: {accent};
+    background-color: __ACCENT__;
     color: #FFFFFF;
     border: none;
 }
 QMessageBox QPushButton:default:hover {
-    background-color: {accent_hover};
+    background-color: __ACCENT_HOVER__;
 }

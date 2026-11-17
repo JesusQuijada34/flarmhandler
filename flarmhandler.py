@@ -31,6 +31,8 @@ _ROOT = Path(__file__).resolve().parent
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
+from lib import qss_loader
+
 try:
     from lib import iflapp_format as _iflapp_format
     from lib import asksome_format as _asksome_format
@@ -201,41 +203,24 @@ def render_app_icon(data: bytes, size: int = 96, accent: str = DEFAULT_ACCENT) -
 
 # --- Hojas de estilo (un fichero por control Qt en ``source/qss/``) ---
 # ``source/qss/{qtcontrolid}.qss`` es la única fuente de estilos: cada archivo
-# agrupa las reglas de un control (QPushButton, QLabel, ...) y usa los
-# placeholders ``{accent}``/``{accent_hover}``/``{accent_pressed}``/``{accent_soft}``
-# que ``build_global_qss`` resuelve con el acento del SO. Así los estilos se
-# pueden reutilizar (Fase 3) y editar sin tocar el código.
-QSS_DIR = _ROOT / "source" / "qss"
-
-
-def load_qss_parts(qss_dir: Path | str | None = None) -> str:
-    """Concatena los ``.qss`` de ``source/qss`` (orden alfabético) en una hoja."""
-    directory = Path(qss_dir) if qss_dir else QSS_DIR
-    if not directory.is_dir():
-        return ""
-    parts = []
-    for path in sorted(directory.glob("*.qss")):
-        parts.append(f"/* === {path.name} === */\n{path.read_text(encoding='utf-8')}")
-    return "\n".join(parts)
+# agrupa las reglas de un control (QPushButton, QLabel, ...) y usa marcadores
+# ``__ACCENT__``/``__ACCENT_HOVER__``/``__ACCENT_PRESSED__``/``__ACCENT_SOFT__``
+# que ``build_global_qss`` resuelve con el acento del SO. La lectura la hace
+# ``lib/qss_loader.py`` (mismo contrato que packagemaker), así los estilos se
+# editan sin tocar el código.
+QSS_DIR = qss_loader.QSS_DIR
 
 
 def build_global_qss(accent: str | None = None) -> str:
-    """Devuelve la hoja global con el acento del SO inyectado en los placeholders.
-
-    Se usa ``str.replace`` en vez de ``str.format`` porque la hoja contiene
-    llaves CSS (``{ ... }``) que ``format`` interpretaría como campos.
-    """
+    """Devuelve la hoja global con el acento del SO inyectado en los marcadores."""
     accent = accent or system_accent_color()
     replacements = {
-        "{accent}": accent,
-        "{accent_hover}": shade_color(accent, 0.90),
-        "{accent_pressed}": shade_color(accent, 0.78),
-        "{accent_soft}": tint_color(accent, 0.88),
+        "ACCENT": accent,
+        "ACCENT_HOVER": shade_color(accent, 0.90),
+        "ACCENT_PRESSED": shade_color(accent, 0.78),
+        "ACCENT_SOFT": tint_color(accent, 0.88),
     }
-    qss = load_qss_parts()
-    for token, value in replacements.items():
-        qss = qss.replace(token, value)
-    return qss
+    return qss_loader.render(qss_loader.load_parts(), replacements)
 
 
 # --- Banner de cabecera según la orientación de la pantalla ---

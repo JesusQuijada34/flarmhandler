@@ -1,4 +1,4 @@
-/* Barra de progreso fina estilo UWP. El acento del SO entra por {accent}. */
+/* Barra de progreso fina estilo UWP. El acento del SO entra por __ACCENT__. */
 
 QProgressBar {
     border: none;
@@ -6,6 +6,6 @@ QProgressBar {
     border-radius: 2px;
 }
 QProgressBar::chunk {
-    background: {accent};
+    background: __ACCENT__;
     border-radius: 2px;
 }

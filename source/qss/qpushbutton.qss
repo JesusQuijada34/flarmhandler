@@ -1,5 +1,5 @@
 /* Botones (geometría UWP: esquinas 4px). El acento del SO entra por
-   {accent} / {accent_hover} / {accent_pressed} / {accent_soft}. */
+   __ACCENT__ / __ACCENT_HOVER__ / __ACCENT_PRESSED__ / __ACCENT_SOFT__. */
 
 QPushButton {
     background-color: #F3F3F3;
@@ -23,15 +23,15 @@ QPushButton:disabled {
 
 /* Botón primario (Instalar / Ejecutar) */
 QPushButton#PrimaryBtn {
-    background-color: {accent};
+    background-color: __ACCENT__;
     color: #FFFFFF;
     border: none;
 }
 QPushButton#PrimaryBtn:hover {
-    background-color: {accent_hover};
+    background-color: __ACCENT_HOVER__;
 }
 QPushButton#PrimaryBtn:pressed {
-    background-color: {accent_pressed};
+    background-color: __ACCENT_PRESSED__;
 }
 QPushButton#PrimaryBtn:disabled {
     background-color: #E8E8E8;
@@ -41,11 +41,11 @@ QPushButton#PrimaryBtn:disabled {
 /* Botón secundario (Compartir) */
 QPushButton#SecondaryBtn {
     background-color: transparent;
-    color: {accent};
+    color: __ACCENT__;
     border: 1px solid #D6D6D6;
 }
 QPushButton#SecondaryBtn:hover {
-    background-color: {accent_soft};
+    background-color: __ACCENT_SOFT__;
 }
 
 /* Botón destructivo (Desinstalar) */

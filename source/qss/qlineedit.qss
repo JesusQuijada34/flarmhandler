@@ -1,15 +1,15 @@
-/* Entradas de texto. El acento del SO entra por {accent}. */
+/* Entradas de texto. El acento del SO entra por __ACCENT__. */
 
 QLineEdit, QTextEdit {
     background: #FFFFFF;
     border: 1px solid #D6D6D6;
     border-radius: 4px;
     padding: 8px;
-    selection-background-color: {accent};
+    selection-background-color: __ACCENT__;
     selection-color: #FFFFFF;
 }
 QLineEdit:focus, QTextEdit:focus {
-    border: 2px solid {accent};
+    border: 2px solid __ACCENT__;
     padding: 7px;
 }
 

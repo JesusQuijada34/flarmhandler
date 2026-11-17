@@ -1,5 +1,5 @@
 /* Reset global y fondo de ventana (estilo UWP).
-   El acento del SO se inyecta con los placeholders {accent}. */
+   El acento del SO se inyecta con los placeholders __ACCENT__. */
 
 * {
     outline: none;
@@ -27,7 +27,7 @@ QWidget {
 /* Panel de estado: borde resaltado con el acento del SO (estilo UWP) */
 #StatusPanel {
     background-color: #FBFBFB;
-    border: 2px solid {accent};
+    border: 2px solid __ACCENT__;
     border-radius: 6px;
 }
 

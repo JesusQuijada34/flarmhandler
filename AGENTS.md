@@ -55,13 +55,15 @@ Repo: `https://github.com/JesusQuijada34/flarmhandler.git`, rama de trabajo `mai
   `tint_color()` mezcla hacia blanco (multiplicar saturaba a cian puro).
 - Las hojas de estilo viven en **`source/qss/{qtcontrolid}.qss`** (un fichero por
   control Qt: `qwidget`, `qpushbutton`, `qlabel`, `qlineedit`, `qscrollbar`,
-  `qmessagebox`, `qprogressbar`). Son la **única fuente** de estilos:
-  `load_qss_parts()` las concatena en orden alfabético y `build_global_qss()` las
-  devuelve con los placeholders `{accent}`, `{accent_hover}`, `{accent_pressed}`
-  y `{accent_soft}` resueltos. `build_global_qss()` usa `str.replace` (no
-  `str.format`) porque las hojas contienen llaves CSS que `format` interpretaría
-  como campos. `main()` llama a `build_global_qss(accent)`. Editar un estilo es
-  tocar el `.qss`, nunca el `.py`.
+  `qmessagebox`, `qprogressbar`). Son la **única fuente** de estilos y usan
+  marcadores `__ACCENT__`, `__ACCENT_HOVER__`, `__ACCENT_PRESSED__` y
+  `__ACCENT_SOFT__`. Las lee `lib/qss_loader.py` (mismo contrato que
+  packagemaker): `load_parts()` las concatena en orden alfabético y
+  `build_global_qss()` inyecta el acento con `render()` (`str.replace`, no
+  `str.format`, porque las hojas contienen llaves CSS). Un control con variantes
+  separa sus bloques con `/* @role: nombre */` y se leen con
+  `qss_loader.qss("qpushbutton", role="primary")`. `main()` llama a
+  `build_global_qss(accent)`. Editar un estilo es tocar el `.qss`, nunca el `.py`.
 - `render_app_icon(data, size, accent)` pinta el icono del paquete sobre un
   cuadrado del color de acento (estilo UWP). Si el icono es transparente o no
   hay, el acento se ve detrás. Sin icono válido, `_set_icon_pixmap` muestra las

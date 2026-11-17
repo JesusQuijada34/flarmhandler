@@ -72,9 +72,10 @@ El nuevo instalador debe replicar fielmente la arquitectura visual y funcional d
     y revelar la interfaz; un temporizador actúa de red de seguridad.
 - [x] **Centralización de QSS (`source/qss/{qtcontrolid}.qss`):** un fichero por
   control Qt (`qwidget`, `qpushbutton`, `qlabel`, `qlineedit`, `qscrollbar`,
-  `qmessagebox`, `qprogressbar`) como única fuente de estilos; `load_qss_parts()`
-  los ensambla y `build_global_qss()` inyecta el acento del SO. Reutilizable en la
-  Fase 3.
+  `qmessagebox`, `qprogressbar`) como única fuente de estilos. `lib/qss_loader.py`
+  (mismo contrato que packagemaker) los lee y ensambla; `build_global_qss()`
+  inyecta el acento del SO con marcadores `__ACCENT__`/`__ACCENT_HOVER__`/
+  `__ACCENT_PRESSED__`/`__ACCENT_SOFT__`. Reutilizable en la Fase 3.
 
 ### Fase 3: Librería Global de Splashes e Inyección Bootloader (`packagemaker`)
 - [ ] **Librería Compartida (`lib/`):** Crear una librería global y compartida que genere y gestione estos splashes para cualquier proyecto compilado con `packagemaker`. Al compilar un proyecto `iflapp`, `packagemaker` debe copiar automáticamente los módulos necesarios a la carpeta `lib/` del proyecto.

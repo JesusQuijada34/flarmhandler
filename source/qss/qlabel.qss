@@ -1,5 +1,5 @@
 /* Etiquetas de la cabecera, el icono cuadrado y el badge informativo.
-   El acento del SO entra por {accent}. */
+   El acento del SO entra por __ACCENT__. */
 
 #TitleLabel {
     color: #5F5F5F;
@@ -23,7 +23,7 @@
 
 /* Contenedor del icono: cuadrado con el color de acento del SO */
 #AppIcon {
-    background-color: {accent};
+    background-color: __ACCENT__;
     border-radius: 6px;
 }
 
