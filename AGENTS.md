@@ -88,6 +88,26 @@ Repo: `https://github.com/JesusQuijada34/flarmhandler.git`, rama de trabajo `mai
 - En PyQt6 los enums son con ámbito: `QtCore.Qt.AlignmentFlag.AlignCenter`,
   `QtCore.Qt.AspectRatioMode.KeepAspectRatio`, etc. El estilo antiguo
   (`QtCore.Qt.AlignCenter`) falla en tiempo de ejecución.
+- **Enums sin ámbito en los diálogos**: `QtWidgets.QMessageBox.Yes`/`.No` y
+  `QtWidgets.QSizePolicy.Expanding` **no existen** en PyQt6 (lanzan
+  `AttributeError`). Usa `QMessageBox.StandardButton.Yes/No` y
+  `QSizePolicy.Policy.Expanding`. Afectaba a `on_uninstall`, `offer_open_releases`
+  y al `setSizePolicy` de la vista README.
+- **Vista Markdown opcional**: el bloque usa QtWebEngine de **PyQt6**
+  (`from PyQt6.QtWebEngineWidgets import QWebEngineView` + `import markdown`), no
+  PyQt5. `QWebEngineView` se define como `None` en el `except` para que
+  `isinstance(self.readme_view, QWebEngineView)` no falle cuando falta.
+- **Ventana frameless**: `InstallWindow` retira la barra nativa
+  (`Window | FramelessWindowHint`) para que sólo exista la `CustomTitleBar`. El
+  redimensionado por bordes lo aporta `_ResizeEdgeFilter`, instalado con
+  `_install_resize_filter(self)` **al final** de `__init__` (cuando ya existen
+  todos los hijos) sobre la ventana y todos sus descendientes con
+  `setMouseTracking(True)`: los hijos llenan la ventana y, sin el filtro en
+  ellos, los eventos `MouseMove`/`MouseButtonPress` nunca llegaban a los bordes.
+  Intenta `windowHandle().startSystemResize(edges)` y cae a un redimensionado
+  manual si el backend no lo soporta (offscreen). `CustomTitleBar` mueve con
+  `startSystemMove()` (con arrastre manual de respaldo), alterna maximizado con
+  doble clic y `toggle_max`.
 - `QtSvg` y `pythoncom` se importan por **efecto lateral** (registro del plugin
   SVG en QtGui y sonda de pywin32); se referencian (`_SVG_PLUGIN`,
   `_PYWIN32_PROBE`) para que pyflakes no los marque como muertos sin perder el
@@ -102,4 +122,7 @@ completada: permisos, detección de plataforma/assets y QSS UWP. Fase 2 (banner
 borroso por orientación, Mica, splash integrado sin assets con fade-out y
 centralización de QSS en `source/qss/`) completada.
 Fase 3 (librería global de splashes e inyección *bootloader* en `packagemaker`)
-pendiente.
+completada en el repo `packagemaker`: `lib/splash_bootloader.py` (autocontenido)
++ `lib/bootloader_injection.py` (inyección AST, copia a `lib/` del proyecto y
+sidecar `<guion>_pmboot.py`), cableada en `BuildThread._compile_binary` y
+`iflapp_ide.compile_project`.

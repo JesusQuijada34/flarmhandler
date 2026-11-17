@@ -61,12 +61,13 @@ except Exception:  # pragma: no cover - leviathan-ui ausente
     _WipeWindow = None
     HAS_WIPE_WINDOW = False
 
-# --- Try to import PyQt5-Markdown widgets ---
+# --- Vista Markdown opcional (QtWebEngine de PyQt6 + módulo markdown) ---
 try:
-    from PyQt5.QtWebEngineWidgets import QWebEngineView
+    from PyQt6.QtWebEngineWidgets import QWebEngineView
     import markdown
     HAS_MARKDOWN = True
 except Exception:
+    QWebEngineView = None
     HAS_MARKDOWN = False
 
 # --- Custom titlebar button icons (Windows 11 Style SVGs) ---
@@ -98,6 +99,8 @@ SPLASH_SETUP = "assets/splash_setup.png"
 GITHUB_RELEASES_API = "https://api.github.com/repos/{owner}/{repo}/releases"
 SCHEME = "Fluthinstore"
 MIMETYPE = "application/x-Fluthinstore"
+# Margen (px) de los bordes por los que la ventana frameless se redimensiona.
+RESIZE_MARGIN = 6
 
 # --- Color de acento del sistema operativo ---
 # El instalador debe teñirse con el acento del SO (estilo Windows App Installer).
@@ -1272,26 +1275,180 @@ class CustomTitleBar(QtWidgets.QWidget):
         return btn
 
     def toggle_max(self):
-        if self.window().isMaximized():
-            self.window().showNormal()
+        """Maximiza o restaura la ventana frameless (respeta el área útil)."""
+        window = self.window()
+        if window.isMaximized():
+            window.showNormal()
             self.btn_max.setIcon(self.create_btn("maximize").icon())
         else:
-            self.window().showMaximized()
+            window.showMaximized()
             self.btn_max.setIcon(self.create_btn("restore").icon())
 
     def mousePressEvent(self, event):
-        self.start = self.mapToGlobal(event.pos())
-        self.pressing = True
+        if event.button() == QtCore.Qt.MouseButton.LeftButton:
+            handle = self.window().windowHandle()
+            # El movimiento nativo del WM aporta Aero Snap; si no está
+            # disponible se cae al arrastre manual de toda la vida.
+            if handle is not None and handle.startSystemMove():
+                self.pressing = False
+                return
+            self.start = event.globalPosition().toPoint()
+            self.pressing = True
 
     def mouseMoveEvent(self, event):
         if self.pressing:
-            end = self.mapToGlobal(event.pos())
+            end = event.globalPosition().toPoint()
             movement = end - self.start
             self.window().setGeometry(self.window().geometry().translated(movement))
             self.start = end
 
     def mouseReleaseEvent(self, event):
         self.pressing = False
+
+    def mouseDoubleClickEvent(self, event):
+        if event.button() == QtCore.Qt.MouseButton.LeftButton:
+            self.toggle_max()
+
+
+def _detect_resize_edges(pos, rect, margin=RESIZE_MARGIN):
+    """Combinación de bordes a redimensionar para *pos* dentro de *rect*."""
+    edges = None
+    if pos.x() <= rect.left() + margin:
+        edges = QtCore.Qt.Edge.LeftEdge
+    elif pos.x() >= rect.right() - margin:
+        edges = QtCore.Qt.Edge.RightEdge
+    if pos.y() <= rect.top() + margin:
+        edges = (edges | QtCore.Qt.Edge.TopEdge) if edges is not None else QtCore.Qt.Edge.TopEdge
+    elif pos.y() >= rect.bottom() - margin:
+        edges = (edges | QtCore.Qt.Edge.BottomEdge) if edges is not None else QtCore.Qt.Edge.BottomEdge
+    return edges
+
+
+def _cursor_for_edges(edges):
+    """Cursor adecuado para los bordes detectados (o ``None``)."""
+    if edges is None:
+        return None
+    left = bool(edges & QtCore.Qt.Edge.LeftEdge)
+    right = bool(edges & QtCore.Qt.Edge.RightEdge)
+    top = bool(edges & QtCore.Qt.Edge.TopEdge)
+    bottom = bool(edges & QtCore.Qt.Edge.BottomEdge)
+    if (left and top) or (right and bottom):
+        return QtCore.Qt.CursorShape.SizeFDiagCursor
+    if (right and top) or (left and bottom):
+        return QtCore.Qt.CursorShape.SizeBDiagCursor
+    if left or right:
+        return QtCore.Qt.CursorShape.SizeHorCursor
+    return QtCore.Qt.CursorShape.SizeVerCursor
+
+
+class _ResizeEdgeFilter(QtCore.QObject):
+    """Redimensiona y ajusta el cursor en los bordes de la ventana frameless.
+
+    Se instala sobre la ventana **y** sus descendientes con seguimiento del
+    ratón: los hijos llenan la ventana y consumen los eventos, así que sin el
+    filtro en ellos los bordes nunca recibían ``MouseMove`` ni ``MouseButtonPress``
+    y la ventana sin marco no se podía redimensionar.
+    """
+
+    def __init__(self, window):
+        super().__init__(window)
+        self._window = window
+        self._edges = None
+        self._manual = None
+
+    def eventFilter(self, obj, event):
+        if getattr(self, "_window", None) is None:
+            return False
+        try:
+            return self._filter(obj, event)
+        except RuntimeError:
+            # El objeto C++ puede haberse destruido durante el apagado de Qt.
+            return False
+
+    def _filter(self, obj, event):
+        window = self._window
+        if obj is getattr(window, "title_bar", None):
+            # La titlebar no redimensiona: arrastrarla mueve la ventana.
+            self._reset_cursor()
+            return False
+        if window.isMaximized():
+            return False
+        etype = event.type()
+        if etype == QtCore.QEvent.Type.MouseMove and isinstance(obj, QtWidgets.QWidget):
+            pos = obj.mapTo(window, event.position().toPoint())
+            if self._manual is not None:
+                self._apply_manual_resize(event.globalPosition().toPoint())
+                return True
+            edges = _detect_resize_edges(pos, window.rect(), RESIZE_MARGIN)
+            if edges != self._edges:
+                self._edges = edges
+                if edges is None:
+                    self._reset_cursor()
+                else:
+                    self._window.setCursor(QtGui.QCursor(_cursor_for_edges(edges)))
+        elif etype == QtCore.QEvent.Type.MouseButtonPress and isinstance(obj, QtWidgets.QWidget):
+            if event.button() == QtCore.Qt.MouseButton.LeftButton:
+                pos = obj.mapTo(window, event.position().toPoint())
+                edges = _detect_resize_edges(pos, window.rect(), RESIZE_MARGIN)
+                if edges is not None:
+                    self._begin_resize(edges, event.globalPosition().toPoint())
+                    return True
+        elif etype == QtCore.QEvent.Type.MouseButtonRelease:
+            self._manual = None
+            self._reset_cursor()
+        return False
+
+    def _begin_resize(self, edges, global_pos):
+        handle = self._window.windowHandle()
+        # ``startSystemResize`` delega en el WM (mejor gesto y Aero Snap); si el
+        # backend no lo soporta (p. ej. offscreen) se cae al redimensionado
+        # manual para que la ventana siga siendo utilizable.
+        if handle is not None and handle.startSystemResize(edges):
+            self._manual = None
+            return
+        self._manual = {
+            "edges": edges,
+            "start_pos": global_pos,
+            "start_geo": self._window.geometry(),
+        }
+
+    def _apply_manual_resize(self, global_pos):
+        state = self._manual
+        geo = QtCore.QRect(state["start_geo"])
+        delta = global_pos - state["start_pos"]
+        edges = state["edges"]
+        if edges & QtCore.Qt.Edge.LeftEdge:
+            geo.setLeft(geo.left() + delta.x())
+        if edges & QtCore.Qt.Edge.RightEdge:
+            geo.setRight(geo.right() + delta.x())
+        if edges & QtCore.Qt.Edge.TopEdge:
+            geo.setTop(geo.top() + delta.y())
+        if edges & QtCore.Qt.Edge.BottomEdge:
+            geo.setBottom(geo.bottom() + delta.y())
+        minimum = self._window.minimumSize()
+        if geo.width() < minimum.width() or geo.height() < minimum.height():
+            return
+        self._window.setGeometry(geo)
+
+    def _reset_cursor(self):
+        self._edges = None
+        try:
+            self._window.unsetCursor()
+        except (RuntimeError, AttributeError):
+            pass
+
+
+def _install_resize_filter(window):
+    """Instala :class:`_ResizeEdgeFilter` en la ventana y todos sus hijos."""
+    filt = _ResizeEdgeFilter(window)
+    window.setMouseTracking(True)
+    window.installEventFilter(filt)
+    for child in window.findChildren(QtWidgets.QWidget):
+        child.setMouseTracking(True)
+        child.installEventFilter(filt)
+    window._resize_filter = filt
+    return filt
+
 
 class BlurredBanner(QtWidgets.QWidget):
     def __init__(self, parent=None):
@@ -1522,8 +1679,15 @@ class InstallWindow(QtWidgets.QWidget):
         if not self.installed_path and not local_file_path:
             self.installed_path = find_installed_path(owner, repo)
 
-        #self.setWindowFlags(QtCore.Qt.FramelessWindowHint)
+        # Ventana frameless: la barra de título nativa se retira para que sólo
+        # exista la propia (CustomTitleBar). Sin esto aparecían las dos, que es
+        # el defecto visual descrito en bugs.md.
+        self.setWindowFlags(
+            QtCore.Qt.WindowType.Window
+            | QtCore.Qt.WindowType.FramelessWindowHint
+        )
         self.setObjectName("InstallWindow")
+        self.setMinimumSize(720, 480)
         self.resize(1000, 650)
         
         # Main Layout
@@ -1600,7 +1764,10 @@ class InstallWindow(QtWidgets.QWidget):
         if HAS_MARKDOWN:
             self.readme_view = QWebEngineView()
             self.readme_view.setStyleSheet("background: white;")
-            self.readme_view.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Expanding)
+            self.readme_view.setSizePolicy(
+                QtWidgets.QSizePolicy.Policy.Expanding,
+                QtWidgets.QSizePolicy.Policy.Expanding,
+            )
         else:
             self.readme_view = QtWidgets.QTextEdit()
             self.readme_view.setReadOnly(True)
@@ -1702,6 +1869,10 @@ class InstallWindow(QtWidgets.QWidget):
             
             # Load local assets if available
             self.load_local_assets_to_ui()
+
+        # La ventana ya tiene todos sus hijos: instala el filtro que
+        # redimensiona por los bordes y ajusta el cursor (ventana frameless).
+        _install_resize_filter(self)
 
     def load_local_package_metadata(self):
         """Lee la identidad del paquete local sin descomprimir el payload.
@@ -1992,7 +2163,13 @@ class InstallWindow(QtWidgets.QWidget):
 
             if HAS_MARKDOWN and isinstance(self.readme_view, QWebEngineView):
                 html = markdown.markdown(text)
-                style = "<style>body { font-family: Roboto, sans-serif; color: #202124; line-height: 1.6; } a { color: #ff6d00; text-decoration: none; } code { background: #f1f3f4; padding: 2px 4px; border-radius: 4px; } h1, h2, h3 { color: #202124; }</style>"
+                style = (
+                    "<style>body { font-family: 'Segoe UI', Roboto, sans-serif;"
+                    " color: #202124; line-height: 1.6; }"
+                    f" a {{ color: {self.accent}; text-decoration: none; }}"
+                    " code { background: #f1f3f4; padding: 2px 4px; border-radius: 4px; }"
+                    " h1, h2, h3 { color: #202124; }</style>"
+                )
                 self.readme_view.setHtml(style + html)
             else:
                 self.readme_view.setPlainText(text)
@@ -2032,10 +2209,16 @@ class InstallWindow(QtWidgets.QWidget):
         self.share_btn.setDisabled(False)
 
     def on_uninstall(self):
-        reply = QtWidgets.QMessageBox.question(self, 'Confirmar desinstalación', 
-                                             f"¿Estás seguro de que quieres desinstalar {self.app_name}?",
-                                             QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No, QtWidgets.QMessageBox.No)
-        if reply == QtWidgets.QMessageBox.Yes:
+        buttons = (
+            QtWidgets.QMessageBox.StandardButton.Yes
+            | QtWidgets.QMessageBox.StandardButton.No
+        )
+        reply = QtWidgets.QMessageBox.question(
+            self, 'Confirmar desinstalación',
+            f"¿Estás seguro de que quieres desinstalar {self.app_name}?",
+            buttons, QtWidgets.QMessageBox.StandardButton.No,
+        )
+        if reply == QtWidgets.QMessageBox.StandardButton.Yes:
             try:
                 # 1. Remove desktop shortcuts
                 desktop = Path.home() / 'Desktop'
@@ -2115,7 +2298,7 @@ class InstallWindow(QtWidgets.QWidget):
 
     def offer_open_releases(self, url: str):
         res = QtWidgets.QMessageBox.question(self, "Abrir releases", "No se encontró un instalador compatible. ¿Abrir GitHub Releases?")
-        if res == QtWidgets.QMessageBox.Yes:
+        if res == QtWidgets.QMessageBox.StandardButton.Yes:
             webbrowser.open(url)
 
     def install_finished(self, success: bool, target_dir: str = ""):

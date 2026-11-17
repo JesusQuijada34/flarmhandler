@@ -78,12 +78,16 @@ El nuevo instalador debe replicar fielmente la arquitectura visual y funcional d
   `__ACCENT_PRESSED__`/`__ACCENT_SOFT__`. Reutilizable en la Fase 3.
 
 ### Fase 3: Librería Global de Splashes e Inyección Bootloader (`packagemaker`)
-- [ ] **Librería Compartida (`lib/`):** Crear una librería global y compartida que genere y gestione estos splashes para cualquier proyecto compilado con `packagemaker`. Al compilar un proyecto `iflapp`, `packagemaker` debe copiar automáticamente los módulos necesarios a la carpeta `lib/` del proyecto.
-- [ ] **Inyección de Código tipo Bootloader (AST / Parser de Scripts):**
-  - Durante la compilación de proyectos `PyQt6` / `leviathan-ui` (con arquitectura extensible para otros frameworks GUI en fase beta), `packagemaker` debe analizar e inyectar código en los scripts del proyecto:
-    1. **Cabecera (Post-Imports):** Inyectar la inicialización del *bootloader* del splash inmediatamente después del bloque de `imports` para que el splash se renderice a máxima velocidad antes de que cargue la UI pesada.
-    2. **Cierre (Post-UI Init):** Localizar el punto de instanciación de la ventana/aplicación principal e inyectar al final la llamada de desenlace que desvanece el splash y revela la aplicación.
-  - Generar/actualizar automáticamente la carpeta de splashes del proyecto para cada script procesado.
+- [x] **Librería Compartida (`lib/`):** `lib/splash_bootloader.py` es autocontenido
+  (sólo stdlib + PyQt6 opcional) y `lib/bootloader_injection.copy_splash_library()`
+  lo copia a `lib/` del proyecto junto a un `__init__.py`, al compilar cada guion.
+- [x] **Inyección de Código tipo Bootloader (AST / Parser de Scripts):**
+  `lib/bootloader_injection.py` analiza el guion con `ast` e inyecta, respetando
+  la indentación, la cabecera (post-imports) y el cierre (post-UI init: antes de
+  `app.exec()`/`exec_()` o tras el primer `.show()`). La copia inyectada
+  (`<guion>_pmboot.py`) se compila y se borra al terminar; el original no se toca.
+  Cableado en `BuildThread._compile_binary` y `iflapp_ide.compile_project`.
+  Detecta `PyQt6` y `leviathan_ui`; arquitectura extensible vía `FRAMEWORK_MODULES`.
 
 ---
 
